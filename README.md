@@ -12,9 +12,11 @@ the conversation already are.
 - **A tab in the right sidebar.** It registers a `beads` tab type, so it appears in
   the sidebar's new-tab guide next to Files and the rest, and can be docked, split or
   floated like any other page.
-- **The list.** Status filter chips (active / open / in progress / blocked / closed /
-  all) with live counts, a search box (`/` focuses it), and sorting by update,
-  priority, created or id.
+- **The list.** A *Ready* chip (what you can start right now, from `bd ready`) and a
+  *Blocked* chip beside the status chips, then active / open / in progress / closed /
+  all, each with live counts, a search box (`/` focuses it), and sorting by update,
+  priority, created or id. A row marks itself `ready`, or `waiting on N` when
+  dependencies hold it — the distinction a flat status filter hides.
 - **The issue.** Title, status, priority and label badges, timeline, then the body
   rendered as real Markdown: headings, ordered and unordered lists (nested and task
   lists), tables, fenced code with a language tag, quotes, links, and emphasis.
@@ -54,7 +56,7 @@ The Host half serves one read-only route, `GET /beads-viewer/api`:
 
 | Query | Answer |
 | --- | --- |
-| `?cwd=<dir>` | every issue (slim rows), status counts and the status vocabulary |
+| `?cwd=<dir>` | every issue (slim rows), status counts, the status vocabulary, and each issue's readiness |
 | `?cwd=<dir>&action=issue&id=<id>` | the whole issue, its comments, and both dependency directions |
 | `?cwd=<dir>&action=files&paths=<newline-separated>` | which of those paths exist, and where |
 
@@ -67,8 +69,9 @@ Three properties are deliberate:
   moves between `bd` releases. `bd --json` is the interface that stays correct across
   both — and when a workspace is too old, `bd` prints the migration instruction,
   which the panel shows verbatim rather than guessing at.
-- **It is read-only.** Every call runs `bd --readonly`, and no route mutates
-  anything, so a viewer cannot damage the issue database.
+- **It is read-only.** Every read goes through one `readBd` helper that prepends
+  `bd --readonly`, so the guarantee is structural rather than a per-call habit — a
+  test asserts the flag is on the argv. No route mutates anything.
 - **It only answers itself.** The route refuses non-loopback peers, and `?cwd=` must
   be an existing directory that (or whose parent) holds `.beads`. The directory is
   then used as the workspace for every `bd` call, so a request cannot point `bd` at
@@ -104,11 +107,20 @@ npm test
 The last two matter most: they render the shipped component tree, so a crash, a bad
 prop or a broken hook order fails the suite instead of blanking the panel.
 
+## Readiness, and why it is not computed here
+
+`bd ready` owns the predicate (open, every blocking dependency closed, transitive
+blockers included). Re-deriving it in the plugin would drift the moment bd changes a
+rule, so the Host asks `bd` directly and reports `readiness: 'live'` with a flag per
+issue. When that command fails the payload says `'unavailable'` and the panel offers
+no readiness chip at all — an empty set means "nothing is startable", which is a
+different and actionable statement from "the question could not be asked".
+
 ## Known limits
 
-- Reading the tracker costs one `bd` process per refresh (~1s on a 380-issue
-  project); the list is cached for four seconds and refreshes when the window
-  regains focus.
+- Reading the tracker costs two `bd` processes per refresh (list + ready; ~0.8s on a
+  380-issue project); the list is cached for four seconds and refreshes when the
+  window regains focus.
 - The panel is a viewer. Creating, editing and closing issues stays with `bd` and
   with the agent, which is the one place that can report exactly what changed.
 - Markdown is rendered by a small built-in renderer rather than a full CommonMark

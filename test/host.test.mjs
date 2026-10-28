@@ -7,8 +7,10 @@ import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { execFileSync } from 'node:child_process'
+import { chmod, readFile } from 'node:fs/promises'
 import {
   checkFiles,
+  readBd,
   findWorkspace,
   isLoopbackRequest,
   makeHandler,
@@ -163,6 +165,22 @@ test('checkFiles reports only regular files inside the workspace', async () => {
 /* HTTP handler                                                               */
 /* -------------------------------------------------------------------------- */
 
+test('readBd always passes --readonly', async () => {
+  const seen = []
+  // A fake executable that records its argv and answers like `bd`.
+  const dir = await mkdtemp(join(tmpdir(), 'bv-bin-'))
+  const script = join(dir, 'bd')
+  await writeFile(script, `#!/bin/sh\necho "$@" >> ${JSON.stringify(join(dir, 'argv.log'))}\necho '[]'\n`)
+  await chmod(script, 0o755)
+  try {
+    await readBd(['list', '--json'], dir, script)
+    const argv = (await readFile(join(dir, 'argv.log'), 'utf8')).trim()
+    assert.equal(argv, '--readonly list --json')
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
 test('handler rejects non-loopback callers', async () => {
   const res = await call('/beads-viewer/api?cwd=/tmp', { address: '10.0.0.5' })
   assert.equal(res.status, 403)
@@ -265,6 +283,40 @@ test('live: overview and issue read from a real workspace', async (t) => {
     )
     assert.equal(files.json().ok, true)
     assert.equal(files.json().files.length, 2)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('live: readiness distinguishes startable from blocked issues', async (t) => {
+  if (!hasBd) {
+    t.skip('bd CLI not installed')
+    return
+  }
+  const root = await mkdtemp(join(tmpdir(), 'bv-ready-'))
+  try {
+    execFileSync('git', ['init', '-q'], { cwd: root })
+    const bin = await resolveBd()
+    execFileSync(bin, ['init', '--quiet'], { cwd: root, stdio: 'ignore' })
+    const blocker = execFileSync(bin, ['q', 'The blocker'], { cwd: root, encoding: 'utf8' }).trim()
+    const waiter = execFileSync(bin, ['q', 'Waits on the blocker'], { cwd: root, encoding: 'utf8' }).trim()
+    const free = execFileSync(bin, ['q', 'Nobody blocks this'], { cwd: root, encoding: 'utf8' }).trim()
+    execFileSync(bin, ['dep', 'add', waiter, blocker, '--type', 'blocks'], { cwd: root, stdio: 'ignore' })
+
+    const overview = await readOverview({ cwd: root, bin })
+    assert.equal(overview.ok, true, JSON.stringify(overview).slice(0, 300))
+    assert.equal(overview.readiness, 'live')
+    const byId = Object.fromEntries(overview.issues.map((issue) => [issue.id, issue]))
+    assert.equal(byId[free].ready, true, 'an unblocked issue is ready')
+    assert.equal(byId[blocker].ready, true, 'the blocker itself is startable')
+    assert.equal(byId[waiter].ready, false, 'an issue with an open blocker is not ready')
+    assert.equal(overview.counts.ready, 2, 'two of the three are startable')
+
+    // Closing the blocker releases the waiter.
+    execFileSync(bin, ['close', blocker, '--reason', 'done'], { cwd: root, stdio: 'ignore' })
+    const after = await readOverview({ cwd: root, bin })
+    const afterById = Object.fromEntries(after.issues.map((issue) => [issue.id, issue]))
+    assert.equal(afterById[waiter].ready, true, 'closing the blocker makes the waiter ready')
   } finally {
     await rm(root, { recursive: true, force: true })
   }

@@ -780,6 +780,7 @@ window.__ModuleLoader__.load({
         for (const issue of issues) {
           out[issue.status] = (out[issue.status] ?? 0) + 1
           if (issue.status !== 'closed') out.active += 1
+          if (issue.ready === true) out.ready = (out.ready ?? 0) + 1
         }
         return out
       }, [issues])
@@ -787,7 +788,13 @@ window.__ModuleLoader__.load({
       const visible = React.useMemo(() => {
         const needle = query.trim().toLowerCase()
         let rows = issues.filter((issue) => {
-          if (status === 'active') {
+          if (status === 'ready') {
+            // Readiness is bd's own answer; a row without the flag (an older
+            // Host, or a failed `bd ready`) simply never matches this chip.
+            if (issue.ready !== true) return false
+          } else if (status === 'blocked') {
+            if (issue.status === 'closed' || issue.ready !== false) return false
+          } else if (status === 'active') {
             if (issue.status === 'closed') return false
           } else if (status !== 'all' && issue.status !== status) return false
           if (needle === '') return true
@@ -810,6 +817,15 @@ window.__ModuleLoader__.load({
         })
         return rows
       }, [issues, query, status, sort])
+
+      // Whether the readiness signal is usable decides whether its chips exist at
+      // all: offering "Ready 0" when the question could not be asked would be a
+      // lie, and a "Blocked" chip over a project with no dependency graph is noise.
+      const readinessLive = list.data?.readiness === 'live'
+      // A project with no dependency edges has nothing to wait on, so a Blocked
+      // chip would be a permanent zero; Ready still earns its place because it
+      // answers "can I start the whole backlog right now".
+      const hasEdges = issues.some((issue) => issue.dependencyCount > 0)
 
       React.useEffect(() => setLimit(LIST_PAGE), [query, status, sort])
 
@@ -951,6 +967,24 @@ window.__ModuleLoader__.load({
               h(
                 'div',
                 { className: 'bv-chips' },
+                readinessLive
+                  ? h(FilterChip, {
+                      label: 'Ready',
+                      count: counts.ready ?? 0,
+                      active: status === 'ready',
+                      onClick: () => setStatus('ready'),
+                      tone: statusTone('open'),
+                    })
+                  : null,
+                readinessLive && hasEdges
+                  ? h(FilterChip, {
+                      label: 'Blocked',
+                      count: Math.max(0, (counts.open ?? 0) - (counts.ready ?? 0)),
+                      active: status === 'blocked',
+                      onClick: () => setStatus('blocked'),
+                      tone: statusTone('blocked'),
+                    })
+                  : null,
                 h(FilterChip, {
                   label: 'Active',
                   count: counts.active,
@@ -1053,8 +1087,17 @@ window.__ModuleLoader__.load({
               h('span', { className: 'bv-mono bv-row-id' }, issue.id),
               h(Badge, { tone: issue.priority <= 1 ? 'var(--dsw-alias-state-warn-primary, #d29922)' : undefined }, priorityLabel(issue.priority)),
               h('span', { className: 'bv-subtle' }, issue.type),
+              // A startable issue says so; a blocked one keeps its dependency
+              // count, which is the number that explains the wait.
+              issue.ready === true
+                ? h('span', { className: 'bv-ready' }, 'ready')
+                : issue.ready === false && issue.status === 'open' && issue.dependencyCount > 0
+                  ? h('span', { className: 'bv-waiting' }, `waiting on ${issue.dependencyCount}`)
+                  : null,
               issue.commentCount > 0 ? h('span', { className: 'bv-subtle' }, `💬 ${issue.commentCount}`) : null,
-              issue.dependencyCount > 0 ? h('span', { className: 'bv-subtle' }, `⛓ ${issue.dependencyCount}`) : null,
+              issue.ready !== true && issue.dependencyCount > 0
+                ? h('span', { className: 'bv-subtle' }, `⛓ ${issue.dependencyCount}`)
+                : null,
               h('span', { className: 'bv-subtle bv-right' }, relativeTime(issue.updatedAt)),
             ),
             issue.labels.length > 0
@@ -1325,6 +1368,8 @@ window.__ModuleLoader__.load({
 .bv-row-title{flex:1;min-width:0;font-weight:500;overflow:hidden;text-overflow:ellipsis;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
 .bv-row-meta{display:flex;align-items:center;gap:6px;margin-top:3px;flex-wrap:wrap}
 .bv-row-id{font-size:11px;color:var(--dsw-alias-label-secondary)}
+.bv-ready{font-size:10px;letter-spacing:.03em;color:var(--dsw-alias-state-success-primary);border:1px solid color-mix(in srgb, var(--dsw-alias-state-success-primary) 45%, transparent);border-radius:4px;padding:0 4px;line-height:15px}
+.bv-waiting{font-size:10px;color:var(--dsw-alias-state-warn-primary);opacity:.9}
 .bv-row-labels{display:flex;gap:4px;margin-top:4px;flex-wrap:wrap}
 .bv-right{margin-left:auto}
 .bv-dot{width:7px;height:7px;border-radius:50%;flex:none;display:inline-block;margin-top:4px}

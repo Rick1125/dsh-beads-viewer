@@ -5,7 +5,8 @@ rejected, so the next change does not accidentally undo the reason.
 
 ## Read the tracker through `bd`, not through its database
 
-**Chosen:** shell out to `bd --json --readonly` per request.
+**Chosen:** shell out to `bd --json --readonly` per request, through one `readBd`
+helper that owns the flag.
 
 **Rejected:** open `.beads/*.db`, or the Dolt server, directly.
 
@@ -20,6 +21,24 @@ The cost is one process per refresh (~0.9 s on a 380-issue tracker). Three measu
 keep that off the critical path: the list is cached for four seconds per workspace,
 rows are trimmed to what the list draws, and a detail read is the only thing that
 fetches prose.
+
+## Ask `bd` for readiness instead of deriving it
+
+**Chosen:** a second `bd ready` call per overview; the payload carries the answer.
+
+**Rejected:** compute readiness in the plugin from each issue's `dependencies` and
+their statuses.
+
+A hand-derived predicate matched `bd ready` on this machine only because the shapes
+happened to line up — and getting there took three attempts, because "open status"
+and "every blocking dependency closed" are not the whole rule (in-progress issues are
+excluded, `relates-to` edges never block, and the transitive closure matters). Any of
+those could change in a bd release. The extra call costs ~0.3s on a cached path and
+cannot drift.
+
+The tri-state matters as much as the value: `'live'` with a per-issue boolean, or
+`'unavailable'` when the command fails. The panel offers no readiness chip in the
+second case, because showing "Ready 0" would report a failure as a finding.
 
 ## Return both a workspace-relative and a session-relative path
 

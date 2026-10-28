@@ -270,6 +270,46 @@ test('a row click opens the detail view with Markdown, comments and relations', 
   assert.match(detailHtml, /bv-p|bv-md/)
 })
 
+test('readiness chips and per-row markers follow the Host signal', async () => {
+  const withReadiness = (readiness) => async (url) => {
+    const parsed = new URL(url)
+    const cwd = parsed.searchParams.get('cwd')
+    const action = parsed.searchParams.get('action') ?? 'overview'
+    let body
+    if (action === 'issue') body = await readIssue({ cwd, bin, id: parsed.searchParams.get('id') })
+    else if (action === 'files') body = { ok: true, files: [] }
+    else {
+      body = await readOverview({ cwd, bin })
+      if (readiness === 'unavailable') {
+        body.readiness = 'unavailable'
+        for (const issue of body.issues) delete issue.ready
+        delete body.counts.ready
+      }
+    }
+    return { ok: true, status: 200, json: async () => body, text: async () => '' }
+  }
+
+  // Live readiness: the Ready chip exists and rows carry a marker.
+  globalThis.fetch = withReadiness('live')
+  const props = {
+    sessionId: 'sess-ready',
+    useSessions: (selector) => selector({ byId: { 'sess-ready': { cwd: workspace } } }),
+    useTabInfo: () => ({ tab: { actions: {} } }),
+    inputActions: null,
+  }
+  const live = await renderSettled(BeadsPanel, props)
+  assert.match(live, />Ready</)
+  // The marker is an element, not just a class in the stylesheet.
+  assert.match(live, /class="bv-ready"/)
+
+  // Unavailable readiness: no readiness chip is offered at all, because the
+  // question could not be asked.
+  globalThis.fetch = withReadiness('unavailable')
+  const dark = await renderSettled(BeadsPanel, props)
+  assert.doesNotMatch(dark, />Ready</)
+  assert.doesNotMatch(dark, /class="bv-ready"/)
+})
+
 test('a failing route renders the failure card with its hint', async () => {
   globalThis.fetch = async () => ({ ok: true, status: 200, json: async () => ({ ok: false, code: 'no-workspace', message: 'This project has no Beads workspace.', cwd: '/tmp/x' }), text: async () => '' })
   const out = await renderSettled(BeadsPanel, {

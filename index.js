@@ -106,6 +106,23 @@ export async function resolveBd() {
   return undefined
 }
 
+/**
+ * Run one read-only `bd` command.
+ *
+ * Every read goes through here rather than through `runBd` directly, so the
+ * `--readonly` guarantee is structural instead of a per-call habit: `bd` refuses
+ * every write verb under that flag, and a viewer has no business writing to the
+ * issue database. The version probe is the only call that skips it (it opens no
+ * workspace).
+ *
+ * @param {string[]} args - the verb and its arguments.
+ * @param {string} cwd - the Beads workspace directory.
+ * @param {string} bin - a resolved executable.
+ */
+export function readBd(args, cwd, bin) {
+  return runBd(['--readonly', ...args], cwd, bin)
+}
+
 /** Whether a directory holds a Beads workspace (`.beads` beside the project). */
 async function hasBeadsDir(dir) {
   try {
@@ -248,7 +265,7 @@ const FALLBACK_STATUSES = [
  * @param {{ cwd: string, bin: string }} options
  */
 export async function readOverview({ cwd, bin }) {
-  const list = await runBd(
+  const list = await readBd(
     ['list', '--json', '-n', '0', '--all', '--brief', '--sort', 'updated'],
     cwd,
     bin,
@@ -271,21 +288,48 @@ export async function readOverview({ cwd, bin }) {
   for (const issue of issues) {
     counts[issue.status] = (counts[issue.status] ?? 0) + 1
   }
-  const statuses = await readStatuses(cwd, bin)
+  // Readiness comes from `bd ready`, not from re-deriving it here: the predicate
+  // is bd's own (open status, every blocking dependency closed, transitive
+  // blockers included) and re-implementing it would drift. It is also the signal
+  // a terminal Beads viewer leads with — an open issue nobody can start yet is
+  // the thing a flat status filter hides.
+  const [statuses, readyIds] = await Promise.all([readStatuses(cwd, bin), readReadyIds(cwd, bin)])
+  for (const issue of issues) {
+    if (readyIds !== undefined) issue.ready = readyIds.has(issue.id)
+  }
+  counts.ready = issues.filter((issue) => issue.ready === true).length
   return {
     ok: true,
     cwd,
     issues,
     counts,
     statuses,
+    // `undefined` when `bd ready` could not answer: the panel then shows no
+    // readiness marking at all rather than marking everything not-ready.
+    readiness: readyIds === undefined ? 'unavailable' : 'live',
     truncated: parsed.value.length > MAX_ISSUES,
     at: new Date().toISOString(),
   }
 }
 
+/**
+ * The ids `bd ready` reports, or undefined when that command fails.
+ *
+ * Undefined is distinct from an empty set on purpose: an empty set means "this
+ * project has nothing startable", which the panel may say. Undefined means the
+ * question could not be asked, and the panel must not pretend it was answered.
+ */
+async function readReadyIds(cwd, bin) {
+  const result = await readBd(['ready', '--json', '-n', '0'], cwd, bin)
+  if (!result.ok) return undefined
+  const parsed = parseBdJson(result.stdout)
+  if (!parsed.ok || !Array.isArray(parsed.value)) return undefined
+  return new Set(parsed.value.map((row) => String(row.id ?? '')))
+}
+
 /** Read the status vocabulary, falling back to the built-in list. */
 async function readStatuses(cwd, bin) {
-  const result = await runBd(['statuses', '--json'], cwd, bin)
+  const result = await readBd(['statuses', '--json'], cwd, bin)
   if (!result.ok) return FALLBACK_STATUSES
   const parsed = parseBdJson(result.stdout)
   const builtIn = parsed.ok ? parsed.value?.built_in_statuses : undefined
@@ -306,7 +350,7 @@ export async function readIssue({ cwd, bin, id }) {
   if (!/^[A-Za-z0-9._:-]+$/.test(id)) {
     return { ok: false, code: 'bad-id', message: `Not a valid issue id: ${id}` }
   }
-  const show = await runBd(['show', id, '--json', '--include-comments'], cwd, bin)
+  const show = await readBd(['show', id, '--json', '--include-comments'], cwd, bin)
   if (!show.ok) return failureFrom(show, cwd)
   const parsed = parseBdJson(show.stdout)
   const first = parsed.ok && Array.isArray(parsed.value) ? parsed.value[0] : parsed.ok ? parsed.value : undefined
@@ -324,7 +368,7 @@ export async function readIssue({ cwd, bin, id }) {
 
 /** Issues that depend on `id` (`bd dep list --direction up`), best effort. */
 async function readDependents({ cwd, bin, id }) {
-  const result = await runBd(['dep', 'list', id, '--direction', 'up', '--json'], cwd, bin)
+  const result = await readBd(['dep', 'list', id, '--direction', 'up', '--json'], cwd, bin)
   if (!result.ok) return []
   const parsed = parseBdJson(result.stdout)
   if (!parsed.ok || !Array.isArray(parsed.value)) return []
