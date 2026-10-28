@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="Beads Viewer">
+  <defs>
+    <linearGradient id="bv-bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2f6fdd"/>
+      <stop offset="1" stop-color="#1d3f8f"/>
+    </linearGradient>
+  </defs>
+  <rect x="2" y="2" width="60" height="60" rx="14" fill="url(#bv-bg)"/>
+  <path d="M20 18h24l8 8v22l-4 6H24l-8-8V26l4-8Z" fill="none" stroke="#ffffff" stroke-width="3" stroke-linejoin="round" opacity="0.92"/>
+  <circle cx="26" cy="33" r="4.6" fill="#ffffff"/>
+  <circle cx="32" cy="41" r="4.6" fill="#ffffff"/>
+  <circle cx="38" cy="33" r="4.6" fill="#ffffff"/>
+  <path d="M26 33l6 8 6-8" fill="none" stroke="#ffffff" stroke-width="2.4" opacity="0.85"/>
+  <path d="M32 16v6" stroke="#ffffff" stroke-width="3" stroke-linecap="round" opacity="0.7"/>
+</svg>

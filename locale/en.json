@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Beads Viewer",
+    "description": "Browses this project's Beads issues in the right sidebar: filter and search, read the issue Markdown rendered, open referenced project files, and copy or insert issue ids."
+  }
+}

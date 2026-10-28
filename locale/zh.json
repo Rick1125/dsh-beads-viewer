@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Beads 议题浏览器",
+    "description": "在右侧边栏浏览本项目的 Beads 议题：筛选与搜索、阅读渲染后的议题 Markdown、点开议题中引用的项目文件，并一键复制或插入 issue id。"
+  }
+}

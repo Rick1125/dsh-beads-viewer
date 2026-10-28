@@ -1,0 +1,6 @@
+# dsh-beads-viewer bundle patch: mounts the Beads issue browser.
+# The host half registers the read-only JSON route `/beads-viewer/api`;
+# the client half registers the `beads` tab type in the right sidebar.
+- insert:
+    - id: beads-viewer
+      name: dsh-beads-viewer

@@ -1,0 +1,58 @@
+{
+  "name": "dsh-beads-viewer",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Beads issue browser for the DSH right sidebar: list, filter, read polished issue Markdown, open referenced project files, copy or inject issue ids.",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "beads",
+    "bd",
+    "issues",
+    "sidebar"
+  ],
+  "license": "MIT",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "README.md",
+    "DECISIONS.md"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-sidebar-right",
+        "@deepseek-ai/dsh-client-locale"
+      ]
+    }
+  },
+  "scripts": {
+    "test": "node test/host.test.mjs && node test/client.test.mjs && node test/activation.test.mjs && node test/render.test.mjs && node test/panel.test.mjs",
+    "test:host": "node test/host.test.mjs",
+    "test:client": "node test/client.test.mjs",
+    "test:activation": "node test/activation.test.mjs",
+    "test:render": "node test/render.test.mjs",
+    "test:panel": "node test/panel.test.mjs"
+  },
+  "devDependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  }
+}
