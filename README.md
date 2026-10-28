@@ -19,7 +19,8 @@ the conversation already are.
   dependencies hold it — the distinction a flat status filter hides.
 - **The issue.** Title, status, priority and label badges, timeline, then the body
   rendered as real Markdown: headings, ordered and unordered lists (nested and task
-  lists), tables, fenced code with a language tag, quotes, links, and emphasis.
+  lists), tables, fenced code with a language tag, quotes, links, and emphasis. A
+  long comment thread opens on its most recent comments with the rest one click away.
 - **Linked project files.** Any path in the issue that names a real file in the
   project becomes a clickable link that opens it in the sidebar. A path the project
   does not have stays plain text, so a renamed file cannot become a dead link.
@@ -94,7 +95,7 @@ test/               Host, client-helper, activation and render checks
 npm test
 ```
 
-58 checks in five suites:
+63 checks in five suites:
 
 | File | Covers |
 | --- | --- |
@@ -119,8 +120,10 @@ different and actionable statement from "the question could not be asked".
 ## Known limits
 
 - Reading the tracker costs two `bd` processes per refresh (list + ready; ~0.8s on a
-  380-issue project); the list is cached for four seconds and refreshes when the
-  window regains focus.
+  380-issue project); the list is cached for four seconds, refreshes when the window
+  regains focus, and the Refresh control bypasses the cache for its one request.
+- The panel keeps its state (filter, search, open issue, scroll) across tab switches
+  because its tab type is `keepMounted`.
 - The panel is a viewer. Creating, editing and closing issues stays with `bd` and
   with the agent, which is the one place that can report exactly what changed.
 - Markdown is rendered by a small built-in renderer rather than a full CommonMark

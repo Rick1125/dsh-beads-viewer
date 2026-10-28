@@ -12,6 +12,8 @@ window.__ModuleLoader__.load({
     const TAB_ID = 'dsh-beads-viewer'
     const ROUTE = 'beads-viewer/api'
     const LIST_PAGE = 120
+    /** Comments a long thread shows before it offers the rest. */
+    const COLLAPSED_COMMENTS = 4
     const NS = 'beadsViewer'
 
     /** Markdown-ish extensions that are worth offering as file links. */
@@ -780,6 +782,7 @@ window.__ModuleLoader__.load({
       const [openId, setOpenId] = React.useState(null)
       const [limit, setLimit] = React.useState(LIST_PAGE)
       const [toast, setToast] = React.useState(null)
+      const [showAllComments, setShowAllComments] = React.useState(false)
       const searchRef = React.useRef(null)
 
       const list = useBeads(cwd, sessionId, revision, forceNextRef)
@@ -1290,23 +1293,51 @@ window.__ModuleLoader__.load({
             ? h(
                 'section',
                 { className: 'bv-section' },
-                h('h3', { className: 'bv-section-title' }, `Comments (${comments.length})`),
+                h(
+                  'div',
+                  { className: 'bv-section-head' },
+                  h('h3', { className: 'bv-section-title' }, `Comments (${comments.length})`),
+                  comments.length > COLLAPSED_COMMENTS
+                    ? h(
+                        'button',
+                        {
+                          type: 'button',
+                          className: 'bv-linkbtn',
+                          onClick: () => setShowAllComments((value) => !value),
+                        },
+                        showAllComments
+                          ? 'Collapse'
+                          : `Show all ${comments.length}`,
+                      )
+                    : null,
+                ),
                 h(
                   'div',
                   { className: 'bv-comments' },
-                  comments.map((comment, index) =>
-                    h(
-                      'article',
-                      { key: comment.id || index, className: 'bv-comment' },
+                  // A long thread opens on its most recent activity: that is what a
+                  // reader returns to, and the older comments stay one click away.
+                  comments
+                    .slice(showAllComments ? 0 : -COLLAPSED_COMMENTS)
+                    .map((comment, index) =>
                       h(
-                        'header',
-                        { className: 'bv-comment-head' },
-                        h('span', { className: 'bv-comment-author' }, comment.author || 'unknown'),
-                        h('span', { className: 'bv-subtle' }, relativeTime(comment.createdAt)),
+                        'article',
+                        { key: comment.id || index, className: 'bv-comment' },
+                        h(
+                          'header',
+                          { className: 'bv-comment-head' },
+                          h('span', { className: 'bv-comment-author' }, comment.author || 'unknown'),
+                          h('span', { className: 'bv-subtle' }, relativeTime(comment.createdAt)),
+                        ),
+                        h(Markdown, { text: comment.text, ctx: mdCtx }),
                       ),
-                      h(Markdown, { text: comment.text, ctx: mdCtx }),
                     ),
-                  ),
+                  !showAllComments && comments.length > COLLAPSED_COMMENTS
+                    ? h(
+                        'div',
+                        { className: 'bv-subtle bv-comments-hidden' },
+                        `${comments.length - COLLAPSED_COMMENTS} earlier comments hidden`,
+                      )
+                    : null,
                 ),
               )
             : null,
@@ -1441,6 +1472,11 @@ window.__ModuleLoader__.load({
 .bv-issuelink{padding:0 4px;border-radius:4px;border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-brand-primary);font-family:var(--dsw-font-mono, ui-monospace, Menlo, monospace);font-size:11px;cursor:pointer}
 .bv-issuelink:hover{border-color:var(--dsw-alias-brand-primary)}
 .bv-section{margin-top:16px;padding-top:10px;border-top:1px solid var(--dsw-alias-border-l1)}
+.bv-section-head{display:flex;align-items:baseline;justify-content:space-between;gap:8px;margin-bottom:8px}
+.bv-section-head .bv-section-title{margin:0}
+.bv-linkbtn{border:none;background:transparent;padding:0;color:var(--dsw-alias-brand-primary);font:inherit;font-size:11px;cursor:pointer}
+.bv-linkbtn:hover{text-decoration:underline}
+.bv-comments-hidden{text-align:center;padding:2px 0 4px}
 .bv-section-title{margin:0 0 8px;font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--dsw-alias-label-secondary);font-weight:600}
 .bv-relations{display:flex;flex-direction:column;gap:3px}
 .bv-relation{display:flex;align-items:center;gap:7px;width:100%;padding:4px 6px;border-radius:6px;border:1px solid transparent;background:transparent;color:inherit;font:inherit;text-align:left;cursor:default}
@@ -1531,6 +1567,10 @@ window.__ModuleLoader__.load({
               id: TAB_ID,
               kind: TAB_KIND,
               priority: 'extension',
+              // Keeping the body mounted is what makes the panel feel like a
+              // page rather than a query: the chosen filter, the search text, the
+              // open issue and the scroll position all survive a tab switch.
+              keepMounted: true,
               title: () => translate('tab'),
               guide: [
                 {

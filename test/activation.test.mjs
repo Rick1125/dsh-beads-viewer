@@ -116,6 +116,8 @@ test('apply registers the tab type, its guide entry and the panel body', () => {
   assert.equal(type.id, 'dsh-beads-viewer')
   assert.equal(type.kind, 'beads')
   assert.equal(type.priority, 'extension')
+  // State survives tab switches only because the body is retained.
+  assert.equal(type.keepMounted, true)
   assert.equal(type.title(), 'beadsViewer:tab')
   assert.equal(type.guide.length, 1)
   assert.equal(type.guide[0].kind === undefined, true, 'the registry stamps `kind` itself')

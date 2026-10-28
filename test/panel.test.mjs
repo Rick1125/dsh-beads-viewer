@@ -114,6 +114,7 @@ execFileSync(
   ['create', 'Panel smoke issue', '--description', 'Reads README.md and `README.md` twice.', '--priority', '0'],
   { cwd: workspace, stdio: 'ignore' },
 )
+const smokeId = execFileSync(bin, ['q', 'Panel smoke issue'], { cwd: workspace, encoding: 'utf8' }).trim()
 const blockerId = execFileSync(bin, ['q', 'The blocker'], { cwd: workspace, encoding: 'utf8' }).trim()
 const waitingId = execFileSync(bin, ['q', 'Waits on the blocker'], { cwd: workspace, encoding: 'utf8' }).trim()
 execFileSync(bin, ['dep', 'add', waitingId, blockerId, '--type', 'blocks'], { cwd: workspace, stdio: 'ignore' })
@@ -249,7 +250,9 @@ test('the settled list view shows rows, chips and the toolbar', async () => {
   assert.match(out, /P0/)
   assert.match(out, /P2/)
   assert.match(out, /Active/)
-  assert.match(out, /3 shown/)
+  const shown = /(\d+) shown/.exec(out)
+  assert.ok(shown, 'the list reports how many rows it is showing')
+  assert.ok(Number(shown[1]) >= 3, 'all fixture issues are listed')
 })
 
 test('a row click opens the detail view with Markdown, comments and relations', async () => {
@@ -318,6 +321,46 @@ test('readiness chips and per-row markers follow the Host signal', async () => {
   const dark = await renderSettled(BeadsPanel, props)
   assert.doesNotMatch(dark, />Ready</)
   assert.doesNotMatch(dark, /class="bv-ready"/)
+})
+
+test('a long comment thread opens collapsed and can be expanded', async () => {
+  globalThis.fetch = hostFetch()
+  const props = {
+    sessionId: 'sess-comments',
+    useSessions: (selector) => selector({ byId: { 'sess-comments': { cwd: workspace } } }),
+    useTabInfo: () => ({ tab: { actions: {} } }),
+    inputActions: null,
+  }
+  // Its own issue, so the count is exactly what this test creates no matter
+  // what other tests have done to the shared fixture.
+  const threadId = execFileSync(bin, ['q', 'Thread with history'], { cwd: workspace, encoding: 'utf8' }).trim()
+  for (let i = 0; i < 7; i += 1) {
+    execFileSync(bin, ['comment', threadId, `Comment number ${i} with README.md`], {
+      cwd: workspace,
+      stdio: 'ignore',
+    })
+  }
+  capturedRows = []
+  capturedControls = []
+  await renderSettled(BeadsPanel, props)
+  const row = capturedRows.find((element) => /Thread with history/.test(flatten(element)))
+  assert.ok(row, 'the thread issue is listed')
+  row.props.onClick()
+  const detail = await settleAgain(BeadsPanel, props)
+
+  assert.match(detail, /Comments \(7\)/)
+  assert.match(detail, /Show all 7/)
+  // The newest comments are in view, the oldest are the ones held back.
+  assert.match(detail, /Comment number 5/)
+  assert.doesNotMatch(detail, /Comment number 0 with/)
+  assert.match(detail, /3 earlier comments hidden/)
+
+  const toggle = capturedControls.find((element) => /Show all 7/.test(flatten(element)))
+  assert.ok(toggle, 'the thread offers its hidden comments')
+  toggle.props.onClick()
+  const expanded = await settleAgain(BeadsPanel, props)
+  assert.match(expanded, /Comment number 0 with/)
+  assert.match(expanded, /Collapse/)
 })
 
 test('the Refresh control bypasses the Host cache exactly once', async () => {
