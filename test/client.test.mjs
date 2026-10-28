@@ -186,6 +186,40 @@ test('fileAddress keeps a drive letter colon literal', () => {
   assert.equal(fileAddress('s', 'C:/x/y.ts'), 'dsh-resource://file/session/s/C:/x/y.ts')
 })
 
+test('fileAddress round-trips through the shipped sidebar parser', () => {
+  // Copied verbatim from
+  // @deepseek-ai/dsh-client-ui-sidebar-documentpreview (parseFileAddress).
+  // Requirement "click a file in the issue" rests entirely on this: an address
+  // the sidebar cannot parse opens nothing.
+  const parse = (address) => {
+    try {
+      if (!address.startsWith('dsh-resource://file/')) return undefined
+      const end = address.search(/[?#]/)
+      const [scope, ...rest] = address.slice(20, end === -1 ? undefined : end).split('/')
+      if (scope !== 'session') return undefined
+      const [id, ...segments] = rest
+      if (id === undefined || id === '' || segments.length === 0) return undefined
+      return { sessionId: decodeURIComponent(id), path: segments.map(decodeURIComponent).join('/') }
+    } catch {
+      return undefined
+    }
+  }
+
+  const cases = [
+    ['sess-abc', 'server/services/poolSnapshot.ts'],
+    ['sess-abc', 'src/main.ts'],
+    ['sess-abc', 'a b/c#d.ts'],
+    ['sess-abc', 'docs/中文笔记.md'],
+    ['sess-abc', 'deep/x/y/z.py'],
+  ]
+  for (const [sessionId, path] of cases) {
+    const parsed = parse(fileAddress(sessionId, path))
+    assert.ok(parsed, `address must parse: ${path}`)
+    assert.equal(parsed.sessionId, sessionId)
+    assert.equal(parsed.path, path)
+  }
+})
+
 test('relativeTime degrades gracefully', () => {
   assert.equal(relativeTime(''), '')
   assert.equal(relativeTime('not-a-date'), '')
