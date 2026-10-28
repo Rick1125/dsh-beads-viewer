@@ -111,10 +111,9 @@ execFileSync(
   ['create', 'Panel smoke issue', '--description', 'Reads README.md and `README.md` twice.', '--priority', '0'],
   { cwd: workspace, stdio: 'ignore' },
 )
-execFileSync(bin, ['create', 'Blocked one', '--description', 'blocked', '--priority', '3'], {
-  cwd: workspace,
-  stdio: 'ignore',
-})
+const blockerId = execFileSync(bin, ['q', 'The blocker'], { cwd: workspace, encoding: 'utf8' }).trim()
+const waitingId = execFileSync(bin, ['q', 'Waits on the blocker'], { cwd: workspace, encoding: 'utf8' }).trim()
+execFileSync(bin, ['dep', 'add', waitingId, blockerId, '--type', 'blocks'], { cwd: workspace, stdio: 'ignore' })
 
 /** A transport that answers from the real Host functions. */
 function hostFetch() {
@@ -235,12 +234,16 @@ test('the settled list view shows rows, chips and the toolbar', async () => {
   assert.ok(out, 'the panel must render')
   assert.match(out, /Search issues/)
   assert.match(out, /Panel smoke issue/)
-  assert.match(out, /Blocked one/)
+  assert.match(out, /Waits on the blocker/)
+  assert.match(out, /The blocker/)
+  // Both readiness markers appear: the startable issue and the waiting one.
+  assert.match(out, /class="bv-ready"/)
+  assert.match(out, /class="bv-waiting"/)
   assert.match(out, /class="bv-row"/)
   assert.match(out, /P0/)
-  assert.match(out, /P3/)
+  assert.match(out, /P2/)
   assert.match(out, /Active/)
-  assert.match(out, /2 shown/)
+  assert.match(out, /3 shown/)
 })
 
 test('a row click opens the detail view with Markdown, comments and relations', async () => {

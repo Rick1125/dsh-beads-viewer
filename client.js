@@ -781,6 +781,9 @@ window.__ModuleLoader__.load({
           out[issue.status] = (out[issue.status] ?? 0) + 1
           if (issue.status !== 'closed') out.active += 1
           if (issue.ready === true) out.ready = (out.ready ?? 0) + 1
+          // Counted, not deduced: `open - ready` would be wrong the moment
+          // `bd ready` stops being exactly the open-and-unblocked set.
+          if (issue.ready === false && issue.status === 'open') out.waiting = (out.waiting ?? 0) + 1
         }
         return out
       }, [issues])
@@ -979,7 +982,7 @@ window.__ModuleLoader__.load({
                 readinessLive && hasEdges
                   ? h(FilterChip, {
                       label: 'Blocked',
-                      count: Math.max(0, (counts.open ?? 0) - (counts.ready ?? 0)),
+                      count: counts.waiting ?? 0,
                       active: status === 'blocked',
                       onClick: () => setStatus('blocked'),
                       tone: statusTone('blocked'),
