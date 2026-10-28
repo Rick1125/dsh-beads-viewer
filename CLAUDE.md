@@ -60,18 +60,43 @@ This protocol applies when ending a Beads implementation workflow. It is subordi
 
 ## Build & Test
 
-_Add your build and test commands here_
+No build step: the client half is a hand-maintained browser bundle, the host half
+plain ESM. Tests need Node 22+ and `bd` on `PATH` (the live-workspace cases skip
+without it).
 
 ```bash
-# Example:
-# npm install
-# npm test
+npm install   # only for the React used by the render tests
+npm test      # 70 checks across five suites (~40s)
+npm run test:client       # Markdown parser, path extraction, file addresses
+npm run test:panel        # the panel's states, rendered with real React
 ```
+
+After editing, the Harness picks the bundle up on its next load; the client half
+needs a page reload, the host half does not.
 
 ## Architecture Overview
 
-_Add a brief overview of your project architecture_
+Two halves, one route:
+
+- `index.js` — Host. Serves `GET /beads-viewer/api` (read-only, loopback only) by
+  shelling out to `bd --json --readonly`. Answer shapes: `overview`, `issue`,
+  `files`. See `DECISIONS.md` for why it reads through the CLI instead of the
+  database.
+- `client.js` — Browser. Registers a `beads` tab type in the right sidebar's own
+  registry (`sidebarRightTabs`) plus its body in `sidebar.right.pane.tab`, and
+  renders the panel. It carries its own Markdown renderer so it depends on no
+  package outside the client's module baseline.
+
+The client never reads the tracker directly: every answer comes from the route.
 
 ## Conventions & Patterns
 
-_Add your project-specific conventions here_
+- **Theme tokens only.** Every colour and font is a `--dsw-*` variable, with a
+  literal only as a `var()` fallback. A `color-mix()` is preferred over a raw
+  literal for opacity work.
+- **Pure helpers, tested.** The Markdown parser and path scanner are pure and take
+  their data as arguments, so the suites can exercise them without a browser.
+- **No fake affordances.** A link is offered only for a file the Host confirmed
+  exists; a readiness chip appears only when `bd` actually answered.
+- **Two callers, one operation.** Anything an agent and a user both do goes through
+  one Host method. This plugin is read-only, so today that is only the reads.
