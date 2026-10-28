@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "embedded",
+  "dolt_database": "dsh_beads_viewer",
+  "project_id": "427b7e89-e6ac-4422-a39a-3007b012e66f"
+}

@@ -16,9 +16,17 @@ window.__ModuleLoader__.load({
     const COLLAPSED_COMMENTS = 4
     const NS = 'beadsViewer'
 
-    /** Markdown-ish extensions that are worth offering as file links. */
+    /**
+     * Markdown-ish extensions that are worth offering as file links.
+     *
+     * Longest first: the alternation is ordered, so `js` before `json` cuts
+     * `package.json` down to `package.js`. A trailing guard rejects one more
+     * name character for the same reason (`config.jsonl` is not `config.js`).
+     */
     const FILE_EXT =
-      '(?:py|pyi|ts|tsx|js|jsx|mjs|cjs|json|jsonl|md|mdx|css|scss|html|vue|svelte|yml|yaml|toml|ini|cfg|sh|bash|zsh|go|rs|java|kt|swift|c|h|cc|cpp|hpp|cs|rb|php|sql|txt|lock|env|proto|graphql|tf)'
+      '(?:py|pyi|jsonl|json|ya?ml|toml|lock|tsx|ts|jsx|mjs|cjs|js|mdx|md|css|scss|html|vue|svelte|ini|cfg|bash|zsh|sh|graphql|proto|rs|go|java|kt|swift|cc|cpp|hpp|cs|rb|php|sql|csv|tsv|txt|env|tf|c|h)'
+    /** An extension match must not be followed by another name character. */
+    const EXT_TAIL = '(?![\\w.])'
 
     /* ------------------------------------------------------------------ *
      * Small utilities
@@ -127,8 +135,8 @@ window.__ModuleLoader__.load({
 
     /** `dir/file.ext:12-34` or `file.ext:12`, always with a known source extension. */
     const PATH_SRC =
-      `(?<pfx>(?:\\.{0,2}\\/)?(?:[\\w.@+-]+\\/)+[\\w.@+-]+\\.${FILE_EXT}(?::\\d+(?:-\\d+)?)?)` +
-      `|(?<pbare>(?:\\.{0,2}\\/)?[\\w.@+-]+\\.${FILE_EXT}(?::\\d+(?:-\\d+)?)?)`
+      `(?<pfx>(?:\\.{0,2}\\/)?(?:[\\w.@+-]+\\/)+[\\w.@+-]+\\.${FILE_EXT}${EXT_TAIL}(?::\\d+(?:-\\d+)?)?)` +
+      `|(?<pbare>(?:\\.{0,2}\\/)?[\\w.@+-]+\\.${FILE_EXT}${EXT_TAIL}(?::\\d+(?:-\\d+)?)?)`
 
     /** An issue id as Beads mints it: `prefix-abc123`, optionally with `.1` children. */
     // Beads mints ids as `prefix-suffix` with a mixed-case suffix (`proj-Phc908`),

@@ -179,6 +179,20 @@ test('extractPaths finds a path after a bullet or inside brackets', () => {
   assert.deepEqual(extractPaths('`docs/x.md`'), ['docs/x.md'])
 })
 
+test('extractPaths keeps the longest extension', () => {
+  // The alternation is ordered: `js` before `json` would truncate these.
+  assert.deepEqual(extractPaths('read package.json now'), ['package.json'])
+  assert.deepEqual(extractPaths('edit config.jsonl'), ['config.jsonl'])
+  assert.deepEqual(extractPaths('data.csv is fine'), ['data.csv'])
+  assert.deepEqual(extractPaths('see app.yaml and app.yml'), ['app.yaml', 'app.yml'])
+})
+
+test('extractPaths does not mistake a property access for a file', () => {
+  // `ctx.capTruncated` is code, not a path.
+  assert.deepEqual(extractPaths('see ctx.capTruncated here'), [])
+  assert.deepEqual(extractPaths('row.depends_on_id is a column'), [])
+})
+
 test('extractPaths never offers a URL as a local path', () => {
   assert.deepEqual(extractPaths('see https://example.com/a/b.ts here'), [])
   assert.deepEqual(extractPaths('see http://x.io/src/y.py'), [])
