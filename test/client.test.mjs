@@ -162,6 +162,28 @@ test('extractPaths finds nested and bare paths, deduped, without line suffixes',
   assert.deepEqual(paths, ['server/services/poolSnapshot.ts', 'notes.md'])
 })
 
+test('extractPaths finds a path that opens the body', () => {
+  // A body whose first token is a path used to yield nothing, because the
+  // boundary needed a preceding character.
+  assert.deepEqual(extractPaths('src/main.ts is the entry point'), ['src/main.ts'])
+})
+
+test('extractPaths never slices a path out of the middle of a word', () => {
+  const paths = extractPaths('blahxmysrc/main.ts and foo=src/main.ts')
+  assert.deepEqual(paths, ['blahxmysrc/main.ts', 'src/main.ts'])
+})
+
+test('extractPaths finds a path after a bullet or inside brackets', () => {
+  assert.deepEqual(extractPaths('- src/main.ts'), ['src/main.ts'])
+  assert.deepEqual(extractPaths('(src/y.ts)'), ['src/y.ts'])
+  assert.deepEqual(extractPaths('`docs/x.md`'), ['docs/x.md'])
+})
+
+test('extractPaths never offers a URL as a local path', () => {
+  assert.deepEqual(extractPaths('see https://example.com/a/b.ts here'), [])
+  assert.deepEqual(extractPaths('see http://x.io/src/y.py'), [])
+})
+
 test('extractPaths ignores prose that is not file-shaped', () => {
   assert.deepEqual(extractPaths('nothing to see here, version 1.2.3 only'), [])
 })

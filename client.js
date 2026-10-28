@@ -136,7 +136,11 @@ window.__ModuleLoader__.load({
     // issue in the list, which is what keeps ordinary hyphenated prose out.
     const ISSUE_ID_SRC = '(?<iid>[A-Za-z][A-Za-z0-9_]*(?:-[A-Za-z0-9_]+)*-[A-Za-z0-9]{2,6}(?:\\.[0-9]+)*)'
 
-    const BOUNDARY = '[\\s(`\'"\\[<,;:*]'
+    // The left boundary keeps a match out of the middle of a word
+    // (`mysrc/main.ts` must not yield `src/main.ts`). A lookbehind says that
+    // without consuming a character, so the match starts at the path and the
+    // start of the string and the start of a line both qualify.
+    const BOUNDARY = '(?<![\\w./\\-])'
 
     /** Normalise one matched path token: strip the `:line` suffix and `./`. */
     function splitPathToken(token) {
