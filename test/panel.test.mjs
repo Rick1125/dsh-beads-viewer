@@ -45,7 +45,10 @@ const hookReact = {
   ...React,
   createElement(type, props, ...children) {
     const element = React.createElement(type, props, ...children)
-    if (props && typeof props.onClick === 'function' && props.className === 'bv-row') capturedRows.push(element)
+    if (props && typeof props.onClick === 'function') {
+      if (props.className === 'bv-row') capturedRows.push(element)
+      capturedControls.push(element)
+    }
     return element
   },
   Fragment: React.Fragment,
@@ -143,6 +146,9 @@ function hostFetch() {
  */
 /** Row elements collected by the element-capturing render. */
 let capturedRows = []
+
+/** Buttons (and other clickable controls) the render created. */
+let capturedControls = []
 
 /** Concatenate a rendered element's text, for content assertions. */
 function flatten(node) {
@@ -257,6 +263,7 @@ test('a row click opens the detail view with Markdown, comments and relations', 
   // Settle the list while capturing the row elements, so the click below uses
   // the handler the component actually wired.
   capturedRows = []
+  capturedControls = []
   const listHtml = await renderSettled(BeadsPanel, props)
   assert.match(listHtml, /Panel smoke issue/)
   const row = capturedRows.find((element) => /Panel smoke issue/.test(flatten(element)))
@@ -311,6 +318,40 @@ test('readiness chips and per-row markers follow the Host signal', async () => {
   const dark = await renderSettled(BeadsPanel, props)
   assert.doesNotMatch(dark, />Ready</)
   assert.doesNotMatch(dark, /class="bv-ready"/)
+})
+
+test('the Refresh control bypasses the Host cache exactly once', async () => {
+  const urls = []
+  globalThis.fetch = async (url) => {
+    urls.push(String(url))
+    const cwd = new URL(String(url)).searchParams.get('cwd')
+    const body = await readOverview({ cwd, bin })
+    return { ok: true, status: 200, json: async () => body, text: async () => '' }
+  }
+  capturedRows = []
+  capturedControls = []
+  const props = {
+    sessionId: 'sess-refresh',
+    useSessions: (selector) => selector({ byId: { 'sess-refresh': { cwd: workspace } } }),
+    useTabInfo: () => ({ tab: { actions: {} } }),
+    inputActions: null,
+  }
+  await renderSettled(BeadsPanel, props)
+  const before = urls.length
+  assert.equal(new URL(urls[0]).searchParams.get('force'), null, 'the first load uses the cache')
+
+  // Find the Refresh control the component actually wired and click it.
+  const refresh = capturedControls.find((element) => element.props.title === 'Refresh')
+  assert.ok(refresh, 'the toolbar renders a Refresh control')
+  refresh.props.onClick()
+  await settleAgain(BeadsPanel, props)
+
+  const after = urls.slice(before)
+  assert.ok(after.length >= 1, 'clicking Refresh triggers a load')
+  assert.equal(new URL(after[0]).searchParams.get('force'), '1', 'the explicit refresh bypasses the cache')
+  if (after.length > 1) {
+    assert.equal(new URL(after[1]).searchParams.get('force'), null, 'the bypass is consumed by one load')
+  }
 })
 
 test('a failing route renders the failure card with its hint', async () => {

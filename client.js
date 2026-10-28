@@ -595,7 +595,11 @@ window.__ModuleLoader__.load({
      * Data hooks
      * ------------------------------------------------------------------ */
 
-    function useBeads(cwd, sessionId, revision) {
+    /**
+     * @param {object} forceRef - ref whose `current` is true for the one load the
+     *   user explicitly asked for (the Refresh control), and reset once used.
+     */
+    function useBeads(cwd, sessionId, revision, forceRef) {
       const [state, setState] = React.useState({ loading: true, error: null, data: null })
       React.useEffect(() => {
         if (!cwd) {
@@ -604,7 +608,13 @@ window.__ModuleLoader__.load({
         }
         const controller = new AbortController()
         setState((prev) => ({ ...prev, loading: true, error: null }))
-        api({ cwd, action: 'overview' }, controller.signal)
+        // `force` matters for the Refresh button: the Host caches the list for a
+        // few seconds, so without it a click inside that window would return the
+        // same bytes and the button would look dead. The flag is consumed here so
+        // a later focus refresh still gets the cache.
+        const force = forceRef?.current === true
+        if (forceRef) forceRef.current = false
+        api({ cwd, action: 'overview', force: force ? 1 : undefined }, controller.signal)
           .then((data) => {
             if (controller.signal.aborted) return
             setState({ loading: false, error: null, data })
@@ -762,6 +772,8 @@ window.__ModuleLoader__.load({
         : undefined
 
       const [revision, setRevision] = React.useState(0)
+      /** Set just before the revision bump so the next load bypasses the cache. */
+      const forceNextRef = React.useRef(false)
       const [query, setQuery] = React.useState('')
       const [status, setStatus] = React.useState('active')
       const [sort, setSort] = React.useState('updated')
@@ -770,7 +782,7 @@ window.__ModuleLoader__.load({
       const [toast, setToast] = React.useState(null)
       const searchRef = React.useRef(null)
 
-      const list = useBeads(cwd, sessionId, revision)
+      const list = useBeads(cwd, sessionId, revision, forceNextRef)
       const detail = useIssue(cwd, openId)
 
       const issues = list.data?.issues ?? []
@@ -907,7 +919,10 @@ window.__ModuleLoader__.load({
         return () => window.removeEventListener('keydown', onKey)
       }, [openId])
 
-      const refresh = () => setRevision((value) => value + 1)
+      const refresh = () => {
+        forceNextRef.current = true
+        setRevision((value) => value + 1)
+      }
 
       /* ---- shared render context for markdown ---- */
       const detailPaths = React.useMemo(() => {
