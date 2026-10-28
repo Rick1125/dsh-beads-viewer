@@ -397,6 +397,45 @@ test('the Refresh control bypasses the Host cache exactly once', async () => {
   }
 })
 
+test('an empty tracker and a too-narrow filter say different things', async () => {
+  const serve = (issues) => async () => ({
+    ok: true,
+    status: 200,
+    json: async () => ({ ok: true, cwd: '/x', issues, counts: { total: issues.length }, statuses: [], readiness: 'live' }),
+    text: async () => '',
+  })
+  const props = {
+    sessionId: 'sess-empty',
+    useSessions: (selector) => selector({ byId: { 'sess-empty': { cwd: '/x' } } }),
+    useTabInfo: () => ({ tab: { actions: {} } }),
+    inputActions: null,
+  }
+
+  globalThis.fetch = serve([])
+  const empty = await renderSettled(BeadsPanel, props)
+  assert.match(empty, /no issues yet/)
+  assert.doesNotMatch(empty, /matches this filter/)
+
+  globalThis.fetch = serve([
+    {
+      id: 'p-aaa11',
+      title: 'Only one',
+      status: 'closed',
+      priority: 2,
+      type: 'task',
+      updatedAt: new Date().toISOString(),
+      createdAt: new Date().toISOString(),
+      commentCount: 0,
+      dependencyCount: 0,
+      labels: [],
+    },
+  ])
+  // The default filter is "active", which excludes the single closed issue.
+  const filtered = await renderSettled(BeadsPanel, props)
+  assert.match(filtered, /matches this filter/)
+  assert.doesNotMatch(filtered, /no issues yet/)
+})
+
 test('a failing route renders the failure card with its hint', async () => {
   globalThis.fetch = async () => ({ ok: true, status: 200, json: async () => ({ ok: false, code: 'no-workspace', message: 'This project has no Beads workspace.', cwd: '/tmp/x' }), text: async () => '' })
   const out = await renderSettled(BeadsPanel, {

@@ -95,7 +95,7 @@ test/               Host, client-helper, activation and render checks
 npm test
 ```
 
-69 checks in five suites:
+70 checks in five suites:
 
 | File | Covers |
 | --- | --- |

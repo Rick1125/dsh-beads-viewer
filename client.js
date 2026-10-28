@@ -1090,7 +1090,15 @@ window.__ModuleLoader__.load({
           return h(FailureCard, { data: list.data, cwd, onRetry: refresh })
         }
         if (visible.length === 0) {
-          return h('div', { className: 'bv-empty' }, list.data && list.data.truncated ? 'No issue matches this filter.' : 'No issues match this filter.')
+          // Three different empty states, each with its own next step. "No issues
+          // match this filter" is wrong for a tracker that has no issues at all,
+          // and "no issues yet" is wrong when a filter is simply too narrow.
+          const total = issues.length
+          const message =
+            total === 0
+              ? 'This project has a Beads workspace but no issues yet. `bd create` adds the first one.'
+              : `No issue matches this filter (${total} in the tracker).`
+          return h('div', { className: 'bv-empty' }, message)
         }
         const rows = visible.slice(0, limit).map((issue) =>
           h(
