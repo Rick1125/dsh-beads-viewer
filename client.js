@@ -1987,35 +1987,34 @@ ol.bv-mlist>.bv-mli::before{left:-2.35em;width:2.35em;content:counter(bv-li) "."
      * service instead of pointing at a dead registry.
      */
     function apply(ctx) {
-      // Locale is optional: without it the tab keeps its English copy instead of
-      // showing raw keys, and the panel still works.
-      let translate = (key) => EN[key] ?? key
-      const locale = ctx.get ? ctx.get('locale') : undefined
-      if (locale !== undefined) {
-        localeService = locale
-        ctx.effect(() => locale.register(NS, { zh: ZH, en: EN }), 'beads-viewer: dictionaries')
-        translate = locale.bind(NS)
-        // The Host re-renders slot occupants on a locale change, but the render
-        // reads the module dictionary, so it has to be swapped before that render
-        // happens. Reading the snapshot once also covers a language chosen before
-        // this plugin loaded.
-        if (typeof locale.subscribe === 'function') {
-          // The Host notifies subscribers with no argument (`fn()`), so the
-          // snapshot has to be read back from the service. Destructuring the
-          // callback parameter instead throws inside the Host's notify loop,
-          // which is caught and logged as "locale subscriber crashed" — the
-          // dictionary then never changes and the language switch looks dead.
-          const readLanguage = () =>
-            typeof locale.getSnapshot === 'function' ? locale.getSnapshot()?.active : undefined
-          ctx.effect(
-            () =>
-              locale.subscribe(() => {
-                dictionary = readLanguage() === 'zh' ? ZH : EN
-              }),
-            'beads-viewer: active dictionary',
-          )
-          dictionary = readLanguage() === 'zh' ? ZH : EN
-        }
+      // `locale` is declared in `inject`, so Cordis hands it over resolved: the
+      // dictionary lands in the right language on the very first render. Reading it
+      // with a bare ctx.get instead was the restart bug — activation order is not
+      // guaranteed, and a late service made the whole block silently skip, leaving
+      // the panel on English until a language *change* happened to fix it.
+      const locale = ctx.locale
+      localeService = locale
+      ctx.effect(() => locale.register(NS, { zh: ZH, en: EN }), 'beads-viewer: dictionaries')
+      translate = locale.bind(NS)
+      // The Host re-renders slot occupants on a locale change, but the render reads
+      // the module dictionary, so the dictionary has to be swapped before that
+      // render happens.
+      if (typeof locale.subscribe === 'function') {
+        // The Host notifies subscribers with no argument (`fn()`), so the snapshot
+        // has to be read back from the service. Destructuring the callback
+        // parameter instead throws inside the Host's notify loop, which is caught
+        // and logged as "locale subscriber crashed" — the dictionary then never
+        // changes and the language switch looks dead.
+        const readLanguage = () =>
+          typeof locale.getSnapshot === 'function' ? locale.getSnapshot()?.active : undefined
+        ctx.effect(
+          () =>
+            locale.subscribe(() => {
+              dictionary = readLanguage() === 'zh' ? ZH : EN
+            }),
+          'beads-viewer: active dictionary',
+        )
+        dictionary = readLanguage() === 'zh' ? ZH : EN
       }
 
       const wire = (scope) => {
@@ -2069,7 +2068,7 @@ ol.bv-mlist>.bv-mli::before{left:-2.35em;width:2.35em;content:counter(bv-li) "."
     }
 
     return {
-      inject: ['slots'],
+      inject: ['slots', 'locale'],
       apply,
       /** Test seam: pure helpers exercised by `npm test` in Node. */
       __test: {

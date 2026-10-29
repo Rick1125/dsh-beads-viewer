@@ -93,6 +93,8 @@ function makeContext({ withTabs = true } = {}) {
   if (withTabs) services.set('sidebarRightTabs', tabs)
 
   const ctx = {
+    // `inject: ['slots', 'locale']` resolves onto ctx itself for the declared ids.
+    locale,
     get(name) {
       return services.get(name)
     },
@@ -115,10 +117,11 @@ function makeContext({ withTabs = true } = {}) {
   return { ctx, record }
 }
 
-test('the module declares only slots as a hard dependency', () => {
-  // Locale is read optionally, so a composition without it keeps English copy
-  // rather than failing activation.
-  assert.deepEqual(mod.inject, ['slots'])
+test('the module declares slots and locale as hard dependencies', () => {
+  // Declaring `locale` is what makes Cordis resolve the service before apply runs.
+  // Reading it with a bare ctx.get instead was the restart bug: activation order is
+  // not guaranteed, so a late locale service left the panel permanently English.
+  assert.deepEqual(mod.inject, ['slots', 'locale'])
   assert.equal(typeof mod.apply, 'function')
 })
 
