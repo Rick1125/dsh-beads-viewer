@@ -47,10 +47,10 @@ flag on and off.
   movement, not a tracker change. A test walks the loop — detail read, poll,
   poll — and asserts no change is seen either time.
 
-  ⚠️ **Published before these commits landed.** The npm 1.1.1 tarball does not
-  contain this fix — the commits landed after the publish, and the tag was not
-  moved. Verified against the published tarball (no `data.busy` check in the
-  client, no `busyNow` in the Host). The actual fix ships in 1.1.2.
+  ⚠️ **Not in the published 1.1.1.** The busy-skip below was written after the
+  1.1.1 tag was cut — verified against the tag's own tree and the published
+  tarball, neither contains it. The actual fix ships in 1.1.2; if you are on 1.1.1
+  this is why an open detail view still re-renders occasionally.
 
 ## 1.1.0
 
