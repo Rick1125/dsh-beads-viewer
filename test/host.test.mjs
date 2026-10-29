@@ -25,6 +25,7 @@ import {
   shapeIssue,
   apply,
   ROUTE_PATH,
+  fingerprintWorkspace,
 } from '../index.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -488,6 +489,74 @@ results.push({
     }
     apply(ctx, {})
     assert.equal(lines.length, 1, 'the absence is logged, not thrown')
+  },
+})
+
+results.push({
+  name: 'the workspace fingerprint moves when the store moves and ignores locks',
+  skip: false,
+  fn: async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'bv-fp-'))
+    const beads = join(dir, '.beads', 'embeddeddolt', 'proj', '.dolt', 'noms')
+    await mkdir(beads, { recursive: true })
+    await writeFile(join(beads, 'manifest'), 'a')
+    const before = fingerprintWorkspace(join(dir, '.beads'))
+    assert.ok(before && before.includes('manifest'), 'the store entries must form the fingerprint')
+
+    // A write to the store moves the fingerprint.
+    await new Promise((done) => setTimeout(done, 20))
+    await writeFile(join(beads, 'manifest'), 'bb')
+    const after = fingerprintWorkspace(join(dir, '.beads'))
+    assert.notEqual(after, before, 'a data write must change the fingerprint')
+
+    // A lock file appearing must not: it is a process event, not a data change.
+    await writeFile(join(beads, 'LOCK'), '')
+    const withLock = fingerprintWorkspace(join(dir, '.beads'))
+    assert.equal(withLock, after, 'a lock file must not count as a data change')
+    await rm(dir, { recursive: true, force: true })
+  },
+})
+
+results.push({
+  name: 'the version route answers without spawning bd and without a workspace',
+  skip: false,
+  fn: async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'bv-ver-'))
+    const cwd = join(dir, 'proj')
+    await mkdir(join(cwd, '.beads', 'embeddeddolt', 'proj', '.dolt', 'noms'), { recursive: true })
+    await writeFile(join(cwd, '.beads', 'embeddeddolt', 'proj', '.dolt', 'noms', 'manifest'), 'x')
+    // resolveBd is replaced with one that explodes: reaching it would mean the
+    // route paid a process spawn for a stat.
+    const seen = []
+    const ctx = {
+      get: (key) => (key === 'webServer' ? { register: (route) => seen.push(route) } : undefined),
+      inject: (names, callback) => callback({ get: (key) => (key === 'webServer' ? { register: (route) => seen.push(route) } : undefined), effect: (fn) => fn() }),
+      effect: (fn) => fn(),
+    }
+    apply(ctx, { handlerDeps: { resolveBd: async () => { throw new Error('bd must not be spawned for a version poll') } } })
+    const handler = seen[0].handler
+    const payload = await new Promise((done) => {
+      handler(
+        { url: `http://127.0.0.1${ROUTE_PATH}?cwd=${encodeURIComponent(cwd)}&action=version`, method: 'GET', socket: { remoteAddress: '127.0.0.1' } },
+        { writeHead(){}, end(body){ done(JSON.parse(body)) } },
+      )
+    })
+    assert.equal(payload.ok, true, 'the version route answers even when bd is unusable')
+    assert.ok(payload.version && payload.version.includes('manifest'), 'it reports the store fingerprint')
+    // Three answers in a row must be identical: `bd where` spawns bd, bd opens the
+    // Dolt store, and opening it touches journal.idx — so a poll that spawns bd
+    // moves the fingerprint it just read and refreshes forever.
+    const again = await new Promise((done) => {
+      handler(
+        { url: `http://127.0.0.1${ROUTE_PATH}?cwd=${encodeURIComponent(cwd)}&action=version`, method: 'GET', socket: { remoteAddress: '127.0.0.1' } },
+        { writeHead(){}, end(body){ done(JSON.parse(body)) } },
+      )
+    })
+    assert.equal(again.version, payload.version, 'polling must not disturb the fingerprint')
+    // The version path answers from the filesystem walk, so the cwd comes back as
+    // the caller spelled it (no bd, hence no realpath from `bd where`).
+    assert.equal(payload.cwd, cwd)
+    await rm(dir, { recursive: true, force: true })
   },
 })
 

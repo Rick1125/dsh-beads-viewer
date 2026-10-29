@@ -21,6 +21,7 @@
  */
 import { execFile } from 'node:child_process'
 import { access, stat } from 'node:fs/promises'
+import { readdirSync, statSync } from 'node:fs'
 import { constants as fsConstants } from 'node:fs'
 import { homedir } from 'node:os'
 import { join, resolve, sep } from 'node:path'
@@ -555,6 +556,80 @@ function sendJson(res, status, body) {
  * @param {{ resolveBd?: () => Promise<string | undefined> }} [deps] - injection
  *   points for tests.
  */
+/**
+ * A cheap change signal for a Beads workspace, for the client to poll.
+ *
+ * `bd` keeps its data in `.beads/embeddeddolt/<name>/.dolt/noms/` — those files'
+ * mtimes move on every write. Statting four paths costs microseconds and spawns
+ * nothing, so the panel can poll it often without paying for a `bd` process; only
+ * when the fingerprint changes does the client spend the real read.
+ *
+ * `issues.jsonl` is deliberately not part of this: it is a passive export that
+ * `bd` refreshes lazily, so its mtime can lag an actual write by hours.
+ */
+export function fingerprintWorkspace(beadsDir) {
+  // Candidate stores, in the order bd actually uses them. Dolt workspaces keep
+  // their mutable data under .dolt/noms; SQLite layouts are single files.
+  const candidates = [
+    join(beadsDir, 'embeddeddolt'),
+    join(beadsDir, 'dolt'),
+    join(beadsDir, 'db.sqlite'),
+    join(beadsDir, 'beads.db'),
+  ]
+  for (const path of candidates) {
+    try {
+      const info = statSync(path)
+      if (!info.isDirectory()) {
+        // A SQLite layout: the file's own stamp is the whole signal.
+        return `${info.mtimeMs}:${info.size}`
+      }
+      // Dolt layout: the store lives at <path>[/<dbname>]/.dolt/noms. Watching the
+      // wrapper (or its lock files) would tick on every `bd` process start, which is
+      // not a data change — so watch the store's own entries.
+      const nomsCandidates = [
+        join(path, '.dolt', 'noms'),
+        // one level of database directories, e.g. embeddeddolt/<name>
+        ...(() => {
+          try {
+            return readdirSync(path)
+              .filter((entry) => !entry.endsWith('.lock'))
+              .map((entry) => join(path, entry, '.dolt', 'noms'))
+          } catch {
+            return []
+          }
+        })(),
+      ]
+      let store = undefined
+      for (const candidate of nomsCandidates) {
+        try {
+          statSync(candidate)
+          store = candidate
+          break
+        } catch {
+          /* try the next candidate path */
+        }
+      }
+      if (store === undefined) store = path
+      let stamp = ''
+      for (const entry of readdirSync(store)) {
+        const upper = entry.toUpperCase()
+        if (entry === '.DS_Store' || entry === 'LOCK' || entry.endsWith('.lock')) continue
+        try {
+          const child = statSync(join(store, entry))
+          stamp += `${entry}:${child.mtimeMs}:${child.size}|`
+        } catch {
+          /* an entry vanishing mid-scan is the poll racing a write; next poll sees it */
+        }
+      }
+      return stamp
+    } catch {
+      /* try the next candidate layout */
+    }
+  }
+  return undefined
+}
+
+
 export function makeHandler(deps = {}) {
   const resolveBdImpl = deps.resolveBd ?? resolveBd
   /** Per-workspace overview cache: a sidebar opened twice in a row is free. */
@@ -599,6 +674,26 @@ export function makeHandler(deps = {}) {
       }
       if (!info.isDirectory()) {
         sendJson(res, 400, { ok: false, code: 'no-cwd', message: `Not a directory: ${requested}` })
+        return
+      }
+      // The change signal is answered without `bd` at all: its whole point is to be
+      // cheap enough to poll. That means no `bd where` either — spawning `bd` opens
+      // the Dolt store, which touches journal.idx, which would move the very
+      // fingerprint we just read and make every poll look like a change. The
+      // workspace root for a stat is a filesystem question, so use the walk-up.
+      if (action === 'version') {
+        const workspace = await findWorkspace(requested)
+        if (workspace === undefined) {
+          sendJson(res, 200, {
+            ok: false,
+            code: 'no-workspace',
+            cwd: requested,
+            message: 'This project has no Beads workspace (no .beads directory).',
+          })
+          return
+        }
+        const beadsDir = join(workspace, '.beads')
+        sendJson(res, 200, { ok: true, cwd: workspace, version: fingerprintWorkspace(beadsDir) ?? null })
         return
       }
       const bin = await resolveBdImpl()

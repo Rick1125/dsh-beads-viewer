@@ -12,6 +12,9 @@ window.__ModuleLoader__.load({
     const TAB_ID = 'dsh-beads-viewer'
     const ROUTE = 'beads-viewer/api'
     const LIST_PAGE = 120
+    /** How often the panel asks for the workspace fingerprint. Cheap by design. */
+    /** How often the panel asks for the workspace fingerprint. Cheap by design. */
+    const pollInterval = () => Number(globalThis.__bvPollMs) || 5000
     /** Comments a long thread shows before it offers the rest. */
     const COLLAPSED_COMMENTS = 4
     const NS = 'beadsViewer'
@@ -651,7 +654,7 @@ window.__ModuleLoader__.load({
       return state
     }
 
-    function useIssue(cwd, id) {
+    function useIssue(cwd, id, revision) {
       const [state, setState] = React.useState({ loading: false, error: null, data: null })
       React.useEffect(() => {
         if (!cwd || !id) {
@@ -670,7 +673,7 @@ window.__ModuleLoader__.load({
             setState({ loading: false, error: String(error?.message ?? error), data: null })
           })
         return () => controller.abort()
-      }, [cwd, id])
+      }, [cwd, id, revision])
       return state
     }
 
@@ -920,6 +923,8 @@ window.__ModuleLoader__.load({
         : undefined
 
       const [revision, setRevision] = React.useState(0)
+      /** Last workspace fingerprint the panel saw; undefined until the first poll. */
+      const [seenVersion, setSeenVersion] = React.useState(undefined)
       /** Set just before the revision bump so the next load bypasses the cache. */
       const forceNextRef = React.useRef(false)
       const [query, setQuery] = React.useState('')
@@ -932,7 +937,7 @@ window.__ModuleLoader__.load({
       const searchRef = React.useRef(null)
 
       const list = useBeads(cwd, sessionId, revision, forceNextRef)
-      const detail = useIssue(cwd, openId)
+      const detail = useIssue(cwd, openId, revision)
 
       const issues = list.data?.issues ?? []
       const knownIds = React.useMemo(() => new Set(issues.map((issue) => issue.id)), [issues])
@@ -1053,6 +1058,30 @@ window.__ModuleLoader__.load({
         window.addEventListener('focus', onFocus)
         return () => window.removeEventListener('focus', onFocus)
       }, [tabInfo?.tab?.visible])
+
+      React.useEffect(() => {
+        // `bd` writes from a terminal or another session do not touch this window,
+        // so focus alone never learns about them. Poll a stat-only fingerprint of
+        // the workspace instead: it answers in microseconds and spawns nothing, and
+        // only a change spends the real `bd` read. Invisible tabs stay silent.
+        if (tabInfo?.tab?.visible === false) return undefined
+        if (!cwd) return undefined
+        let stopped = false
+        const timer = setInterval(() => {
+          api({ cwd, action: 'version' }).then((data) => {
+            if (stopped || !data?.ok) return
+            const version = data.version ?? null
+            setSeenVersion((previous) => {
+              // The first answer only seeds the baseline; a change from it refreshes.
+              if (previous === undefined || previous === version) return version
+              forceNextRef.current = true
+              setRevision((value) => value + 1)
+              return version
+            })
+          }).catch(() => { /* the route is down; the failure card handles it */ })
+        }, pollInterval())
+        return () => { stopped = true; clearInterval(timer) }
+      }, [cwd, tabInfo?.tab?.visible])
 
       React.useEffect(() => {
         // A window-level listener has to prove it may act before it does.

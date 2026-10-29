@@ -55,6 +55,40 @@ The tri-state matters as much as the value: `'live'` with a per-issue boolean, o
 `'unavailable'` when the command fails. The panel offers no readiness chip in the
 second case, because showing "Ready 0" would report a failure as a finding.
 
+## External `bd` writes are noticed by polling a stat, not by watching
+
+**Chosen:** the panel polls `?action=version` every five seconds while its tab is
+visible; the Host answers with a fingerprint stat'd from the Dolt store's own
+entries, and only a change spends the real `bd` read (cache bypassed).
+
+**Rejected:** file watching on the workspace, refreshing on window focus alone, and
+any version signal that goes through `bd`.
+
+The report was: an issue created or updated from a terminal never appeared. The
+panel refreshed on window focus, and focus does not move when the change happened
+somewhere else. Three dead ends were measured before the working design:
+
+1. **`issues.jsonl` mtime** — it is a lazy export; its stamp lagged the last real
+   write by hours.
+2. **A fingerprint including lock files** — `.lock` and noms' own `LOCK` tick on
+   every `bd` process start, so any `bd` command anywhere in the project would have
+   refreshed the panel for no reason.
+3. **Resolving the workspace with `bd where` in the version route** — the subtle
+   one. Spawning `bd` opens the Dolt store, which touches `journal.idx`. The route
+   stat'd the fingerprint *after* spawning, so every poll moved the value it had
+   just read: the panel would have refreshed forever, five seconds apart, and no
+   single test caught it until the version route was polled three times in a row.
+
+So the version route answers with **no `bd` at all** — the workspace root comes from
+the filesystem walk, and the fingerprint stats `.dolt/noms`' entries while skipping
+every lock. One consequence is accepted: a `BEADS_DIR` override resolves the
+fingerprint from the walked directory rather than `bd`'s answer, so in that setup
+the signal may be taken from a neighbouring workspace's store. The main data still
+comes from `bd`, so a missed refresh is the worst case, not wrong data.
+
+Cost, measured: the fingerprint is a handful of stats (~3ms, no subprocess) against
+~0.8s for a real read, and the four-second overview cache still applies underneath.
+
 ## Secondary blocks are washed; the description is not
 
 **Chosen:** `background: color-mix(in srgb, var(--bv-teal) 4%, transparent)` on

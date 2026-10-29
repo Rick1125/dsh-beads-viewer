@@ -144,7 +144,7 @@ docs/               Screenshots referenced by this README
 npm test
 ```
 
-103 checks in five suites:
+106 checks in five suites:
 
 | File | Covers |
 | --- | --- |

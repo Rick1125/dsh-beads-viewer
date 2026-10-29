@@ -457,6 +457,45 @@ test('a language change from the Host reaches the rendered copy', async () => {
   mod.__test.setLocaleService(null)
 })
 
+test('a workspace fingerprint change refreshes, and no change does not', async () => {
+  // `bd` writes from a terminal or another session never touch this window, so the
+  // panel polls a stat-only fingerprint. The test drives the poll with a tiny
+  // interval and a stub that hands out two versions.
+  globalThis.__bvPollMs = 5
+  let version = 'v1'
+  const polls = []
+  mod.__test.setLanguage('en')
+  useFetch((url) => {
+    const action = new URL(String(url)).searchParams.get('action') ?? 'overview'
+    if (action === 'version') {
+      polls.push(version)
+      return Promise.resolve({ ok: true, status: 200, json: async () => ({ ok: true, cwd: workspace, version }), text: async () => '' })
+    }
+    return hostFetchInner(url)
+  })
+  const props = {
+    sessionId: 'sess-2',
+    useSessions: (selector) => selector({ byId: { 'sess-2': { cwd: workspace } } }),
+    useTabInfo: () => ({ tab: { visible: true, actions: {} } }),
+    inputActions: null,
+  }
+
+  const first = await renderSettled(BeadsPanel, props)
+  const rowsBefore = (first.match(/class="bv-row"/g) || []).length
+  assert.ok(polls.includes('v1'), 'the panel must poll the fingerprint')
+
+  // A version change must spend the real read (force-next) and re-render.
+  version = 'v2'
+  capturedRows = []
+  const second = await renderSettled(BeadsPanel, props)
+  assert.equal((second.match(/class="bv-row"/g) || []).length, rowsBefore, 'the same workspace re-renders with the same row count')
+  assert.ok(polls.filter((v) => v === 'v2').length > 0, 'the panel must pick up the new version')
+
+  // No further change: no forced refresh is queued, and the seen-version state has
+  // already converged, so the baseline must hold.
+  globalThis.__bvPollMs = undefined
+})
+
 test('the Refresh control bypasses the Host cache exactly once', async () => {
   const urls = []
   useFetch(async (url) => {
