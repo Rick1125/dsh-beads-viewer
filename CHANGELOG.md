@@ -1,5 +1,37 @@
 # Changelog
 
+## 1.1.2
+
+**Opening a detail page caused 0-3 random refreshes; now none.**
+
+Two races in the fingerprint polling introduced in 1.1.0, both fixed:
+
+- **The busy window opened too late.** The marker that tells the panel "a read of
+  ours is in flight" was set after `bd` had already been resolved and spawned — a
+  poll landing in that gap sampled a fingerprint the in-flight read was about to
+  move. The window now opens at the top of the `bd`-reading path, before the first
+  await.
+- **A sample taken mid-read was treated as a signal.** While a read is in flight
+  the fingerprint is neither the old state nor the new one. The version route now
+  reports `busy: true` and the panel skips those samples entirely; the next poll
+  settles.
+
+**And one leak the fix itself nearly shipped with**
+
+- The busy marker was only released on the normal path: an early return (`bd`
+  binary missing) or a throw left the workspace flagged busy forever, and since the
+  panel skips busy samples, live refresh would have silently stopped for the whole
+  session. The window is closed in a `finally` now.
+- The busy key and the read window's key came from different resolvers (`bd where`
+  answers the real path; macOS spells `/tmp` as `/private/tmp`), so the window was
+  invisible to the poll on some machines. Both keys are normalised through
+  `realpathSync`.
+
+Verified against a real tracker: create → fingerprint moves → issue appears;
+detail open → polls stay stable with `busy: false`; close → fingerprint moves
+again. 106 checks across five suites, plus a gated-read test that flips the busy
+flag on and off.
+
 ## 1.1.1
 
 **An open detail view no longer re-renders itself about once a second.**
