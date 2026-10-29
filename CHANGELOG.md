@@ -13,7 +13,6 @@
   movement, not a tracker change. A test walks the loop — detail read, poll,
   poll — and asserts no change is seen either time.
 
-
 ## 1.1.0
 
 **The panel now notices writes that happen outside this window.**
@@ -47,7 +46,6 @@
 - The npm package declares its `repository` field, so registry download counts
   link back to this repository; `screenshots.json` declares four storefront
   images; the repo pins npmjs.org as its registry.
-
 
 ## 1.0.0
 
