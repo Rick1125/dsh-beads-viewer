@@ -4,7 +4,9 @@
 
 **Opening a detail page caused 0-3 random refreshes; now none.**
 
-Two races in the fingerprint polling introduced in 1.1.0, both fixed:
+Two races in the fingerprint polling introduced in 1.1.0, both fixed. (The 1.1.1
+section below describes the same work but its npm tarball predates the commits —
+this release is the one that actually contains it.)
 
 - **The busy window opened too late.** The marker that tells the panel "a read of
   ours is in flight" was set after `bd` had already been resolved and spawned — a
@@ -44,6 +46,11 @@ flag on and off.
   `afterOwnRead`; the panel treats a polled value equal to that as its own
   movement, not a tracker change. A test walks the loop — detail read, poll,
   poll — and asserts no change is seen either time.
+
+  ⚠️ **Published before these commits landed.** The npm 1.1.1 tarball does not
+  contain this fix — the commits landed after the publish, and the tag was not
+  moved. Verified against the published tarball (no `data.busy` check in the
+  client, no `busyNow` in the Host). The actual fix ships in 1.1.2.
 
 ## 1.1.0
 
