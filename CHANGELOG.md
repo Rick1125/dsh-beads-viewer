@@ -14,6 +14,10 @@
     touches `journal.idx` and would move the fingerprint the route just read —
     every poll would look like a change. Lock files are skipped for the same
     reason: they tick on process starts, not on data changes.
+  - The Host also records its own reads: opening a detail view spawns `bd` and
+    moves the fingerprint, so the version answer carries the post-read value and
+    the panel ignores movement that the panel itself caused. Without this an open
+    detail view re-rendered about once a second, forever.
 
 **Two regressions from 1.0.0 fixed, both reported against real use**
 
