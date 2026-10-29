@@ -1,6 +1,6 @@
 {
   "name": "dsh-beads-viewer",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "type": "module",
   "description": "Beads issue browser for the DSH right sidebar: list, filter, read polished issue Markdown, open referenced project files, copy or inject issue ids.",
   "keywords": [

@@ -14,10 +14,6 @@
     touches `journal.idx` and would move the fingerprint the route just read —
     every poll would look like a change. Lock files are skipped for the same
     reason: they tick on process starts, not on data changes.
-  - The Host also records its own reads: opening a detail view spawns `bd` and
-    moves the fingerprint, so the version answer carries the post-read value and
-    the panel ignores movement that the panel itself caused. Without this an open
-    detail view re-rendered about once a second, forever.
 
 **Two regressions from 1.0.0 fixed, both reported against real use**
 
@@ -37,6 +33,19 @@
 - The npm package declares its `repository` field, so registry download counts
   link back to this repository; `screenshots.json` declares four storefront
   images; the repo pins npmjs.org as its registry.
+
+## 1.1.1
+
+**An open detail view no longer re-renders itself about once a second.**
+
+- Opening a detail view serves `action=issue`, which spawns `bd` — and spawning
+  `bd` opens the Dolt store and touches `journal.idx`. The next fingerprint poll
+  saw a moved value, forced a refresh, and the refresh moved it again: the view
+  re-rendered forever. The Host now records the workspace fingerprint right after
+  every route that spawns `bd`, and the version answer carries it as
+  `afterOwnRead`; the panel treats a polled value equal to that as its own
+  movement, not a tracker change. A test walks the loop — detail read, poll,
+  poll — and asserts no change is seen either time.
 
 ## 1.0.0
 
