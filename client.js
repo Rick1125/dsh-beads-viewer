@@ -1074,6 +1074,11 @@ window.__ModuleLoader__.load({
             setSeenVersion((previous) => {
               // The first answer only seeds the baseline; a change from it refreshes.
               if (previous === undefined || previous === version) return version
+              // This route's own `bd` reads move the fingerprint too (spawning bd
+              // touches journal.idx). The Host reports what the fingerprint looked
+              // like after its last read; if the polled value equals that, the
+              // movement was ours and the tracker has not changed.
+              if (data.afterOwnRead && version === data.afterOwnRead) return version
               forceNextRef.current = true
               setRevision((value) => value + 1)
               return version

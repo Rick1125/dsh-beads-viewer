@@ -634,6 +634,16 @@ export function makeHandler(deps = {}) {
   const resolveBdImpl = deps.resolveBd ?? resolveBd
   /** Per-workspace overview cache: a sidebar opened twice in a row is free. */
   const cache = new Map()
+  /**
+   * Per-workspace fingerprint taken right after one of our own `bd` reads.
+   *
+   * Spawning `bd` opens the Dolt store and touches journal.idx, so the fingerprint
+   * the panel polls moves after every read this route serves — even with no
+   * external write. Without this baseline every poll looked like a change and an
+   * open detail view refreshed forever. The panel compares the polled value to
+   * this: equal means "the movement was ours", not "the tracker changed".
+   */
+  const ownReadFingerprints = new Map()
   const ttl = deps.cacheTtlMs ?? OVERVIEW_TTL_MS
 
   /** One cached overview, or a fresh read when the entry is stale. */
@@ -676,6 +686,11 @@ export function makeHandler(deps = {}) {
         sendJson(res, 400, { ok: false, code: 'no-cwd', message: `Not a directory: ${requested}` })
         return
       }
+      const noteOwnRead = () => {
+        const stamp = fingerprintWorkspace(join(workspace, '.beads'))
+        if (stamp !== undefined) ownReadFingerprints.set(workspace, stamp)
+        return stamp
+      }
       // The change signal is answered without `bd` at all: its whole point is to be
       // cheap enough to poll. That means no `bd where` either — spawning `bd` opens
       // the Dolt store, which touches journal.idx, which would move the very
@@ -693,7 +708,15 @@ export function makeHandler(deps = {}) {
           return
         }
         const beadsDir = join(workspace, '.beads')
-        sendJson(res, 200, { ok: true, cwd: workspace, version: fingerprintWorkspace(beadsDir) ?? null })
+        const version = fingerprintWorkspace(beadsDir) ?? null
+        // Tell the panel what the fingerprint looked like after our last read, so
+        // movement caused by this route's own `bd` spawns is recognisable as ours.
+        sendJson(res, 200, {
+          ok: true,
+          cwd: workspace,
+          version,
+          afterOwnRead: ownReadFingerprints.get(workspace) ?? null,
+        })
         return
       }
       const bin = await resolveBdImpl()
@@ -720,7 +743,9 @@ export function makeHandler(deps = {}) {
       if (action === 'issue') {
         const id = url.searchParams.get('id') ?? ''
         cache.delete(workspace)
-        sendJson(res, 200, await readIssue({ cwd: workspace, bin, id }))
+        const body = await readIssue({ cwd: workspace, bin, id })
+        noteOwnRead()
+        sendJson(res, 200, body)
         return
       }
       if (action === 'files') {
@@ -729,7 +754,9 @@ export function makeHandler(deps = {}) {
         sendJson(res, 200, { ok: true, cwd: workspace, files: await checkFiles(workspace, paths, sessionCwd) })
         return
       }
-      sendJson(res, 200, await overview(workspace, bin, url.searchParams.get('force') === '1'))
+      const body = await overview(workspace, bin, url.searchParams.get('force') === '1')
+      noteOwnRead()
+      sendJson(res, 200, body)
     } catch (error) {
       sendJson(res, 500, {
         ok: false,

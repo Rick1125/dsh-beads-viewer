@@ -89,6 +89,22 @@ comes from `bd`, so a missed refresh is the worst case, not wrong data.
 Cost, measured: the fingerprint is a handful of stats (~3ms, no subprocess) against
 ~0.8s for a real read, and the four-second overview cache still applies underneath.
 
+**One more trap surfaced in real use, and it was the poll's own doing.** Opening a
+detail view serves `action=issue`, which spawns `bd` — and spawning `bd` opens the
+Dolt store and touches `journal.idx`. The next poll therefore saw a moved
+fingerprint, forced a refresh, and the refresh moved it again: an open detail view
+re-rendered forever, roughly a second apart. The fix gives the Host a memory of its
+own reads: after every route that spawns `bd` it records the workspace fingerprint,
+and the version answer carries that value as `afterOwnRead`. The panel treats a
+polled value equal to `afterOwnRead` as "the movement was ours", not a change. A
+test walks the exact loop — detail read, then poll twice — and asserts the panel
+sees no change either time.
+
+The general lesson across this plugin's two polling bugs: **any signal you poll
+must be invariant to the act of polling it**. The first version failed because the
+act of resolving the workspace moved the signal; this one because the act of
+reading the data did.
+
 ## Secondary blocks are washed; the description is not
 
 **Chosen:** `background: color-mix(in srgb, var(--bv-teal) 4%, transparent)` on
