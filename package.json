@@ -1,7 +1,6 @@
 {
   "name": "dsh-beads-viewer",
-  "version": "0.1.0",
-  "private": true,
+  "version": "1.0.0",
   "type": "module",
   "description": "Beads issue browser for the DSH right sidebar: list, filter, read polished issue Markdown, open referenced project files, copy or inject issue ids.",
   "keywords": [
@@ -27,8 +26,10 @@
     "cordis.patch.yml",
     "locale/*.json",
     "icon.svg",
+    "test/*.mjs",
     "README.md",
-    "DECISIONS.md"
+    "DECISIONS.md",
+    "CHANGELOG.md"
   ],
   "dsh": {
     "bundle": {
@@ -54,5 +55,23 @@
   "devDependencies": {
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "peerDependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "peerDependenciesMeta": {
+    "react": {
+      "optional": true
+    },
+    "react-dom": {
+      "optional": true
+    }
   }
 }

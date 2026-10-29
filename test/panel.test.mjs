@@ -22,11 +22,21 @@ import { checkFiles, readIssue, readOverview, resolveBd } from '../index.js'
 const here = dirname(fileURLToPath(import.meta.url))
 
 let captured
+/** Window listeners the panel installed, so a test can press a key. */
+const windowListeners = new Map()
+
 globalThis.window = {
   __ModuleLoader__: { load: ({ factory }) => (captured = factory) },
   setTimeout: (fn) => fn(),
-  addEventListener: () => {},
-  removeEventListener: () => {},
+  addEventListener(type, handler) {
+    const list = windowListeners.get(type) ?? []
+    list.push(handler)
+    windowListeners.set(type, list)
+  },
+  removeEventListener(type, handler) {
+    const list = windowListeners.get(type) ?? []
+    windowListeners.set(type, list.filter((entry) => entry !== handler))
+  },
 }
 // The bundle captures its React at factory time, so the hook runtime has to be
 // handed over here rather than patched onto React later. Element creation stays
@@ -118,10 +128,43 @@ const smokeId = execFileSync(bin, ['q', 'Panel smoke issue'], { cwd: workspace, 
 const blockerId = execFileSync(bin, ['q', 'The blocker'], { cwd: workspace, encoding: 'utf8' }).trim()
 const waitingId = execFileSync(bin, ['q', 'Waits on the blocker'], { cwd: workspace, encoding: 'utf8' }).trim()
 execFileSync(bin, ['dep', 'add', waitingId, blockerId, '--type', 'blocks'], { cwd: workspace, stdio: 'ignore' })
+// A second status and a second type, so the badge assertions can prove that
+// different values really do get different fills.
+const inProgressId = execFileSync(bin, ['q', 'Already moving', '--type', 'bug'], {
+  cwd: workspace,
+  encoding: 'utf8',
+}).trim()
+execFileSync(bin, ['update', inProgressId, '--status', 'in_progress'], { cwd: workspace, stdio: 'ignore' })
+
+/** How many fetches the panel has in flight right now. */
+let inFlight = 0
+
+/** Install a transport and count it as in-flight while it runs. */
+function useFetch(handler) {
+  globalThis.fetch = async (url) => {
+    inFlight += 1
+    try {
+      return await handler(url)
+    } finally {
+      inFlight -= 1
+    }
+  }
+}
+
+/** Resolve once every started request has settled (or the budget runs out). */
+async function drainInFlight(budgetMs = 20000) {
+  const deadline = Date.now() + budgetMs
+  while (inFlight > 0 && Date.now() < deadline) {
+    await new Promise((done) => setTimeout(done, 10))
+  }
+}
+
+function hostFetch() {
+  return hostFetchInner
+}
 
 /** A transport that answers from the real Host functions. */
-function hostFetch() {
-  return async (url) => {
+async function hostFetchInner(url) {
     const parsed = new URL(url)
     const cwd = parsed.searchParams.get('cwd')
     const action = parsed.searchParams.get('action') ?? 'overview'
@@ -134,7 +177,6 @@ function hostFetch() {
       }
     } else body = await readOverview({ cwd, bin })
     return { ok: true, status: 200, json: async () => body, text: async () => JSON.stringify(body) }
-  }
 }
 
 /**
@@ -145,6 +187,9 @@ function hostFetch() {
  * set, and repeats until nothing is dirty or the budget runs out. That is the
  * mount → fetch → setState sequence a browser performs.
  */
+/** How long a render pass may wait for its data before giving up. */
+const SETTLE_BUDGET_MS = 20000
+
 /** Row elements collected by the element-capturing render. */
 let capturedRows = []
 
@@ -172,8 +217,10 @@ async function settleAgain(Component, props, passes = 12) {
     const queued = hookEffects
     hookEffects = []
     for (const effect of queued) effect()
-    for (let tick = 0; tick < 60 && hookVersion === versionBefore; tick += 1) {
-      await new Promise((done) => setTimeout(done, 25))
+    await drainInFlight(SETTLE_BUDGET_MS)
+    // The state write lands in a microtask after the fetch resolves.
+    for (let grace = 0; grace < 40 && hookVersion === versionBefore; grace += 1) {
+      await new Promise((done) => setTimeout(done, 10))
     }
     if (hookVersion === versionBefore) break
   }
@@ -201,8 +248,10 @@ async function renderSettled(Component, props, passes = 12) {
     }
     // Drain the promise chains the effect started, and re-render only if a
     // state write landed, which is what React would schedule.
-    for (let tick = 0; tick < 60 && hookVersion === versionBefore; tick += 1) {
-      await new Promise((done) => setTimeout(done, 25))
+    await drainInFlight(SETTLE_BUDGET_MS)
+    // The state write lands in a microtask after the fetch resolves.
+    for (let grace = 0; grace < 40 && hookVersion === versionBefore; grace += 1) {
+      await new Promise((done) => setTimeout(done, 10))
     }
     if (hookVersion === versionBefore) break
   }
@@ -231,7 +280,7 @@ test('an unbound session asks for a project folder', async () => {
 })
 
 test('the settled list view shows rows, chips and the toolbar', async () => {
-  globalThis.fetch = hostFetch()
+  useFetch(hostFetch())
   const out = await renderSettled(BeadsPanel, {
     sessionId: 'sess-1',
     useSessions: (selector) => selector({ byId: { 'sess-1': { cwd: workspace } } }),
@@ -256,7 +305,7 @@ test('the settled list view shows rows, chips and the toolbar', async () => {
 })
 
 test('a row click opens the detail view with Markdown, comments and relations', async () => {
-  globalThis.fetch = hostFetch()
+  useFetch(hostFetch())
   const props = {
     sessionId: 'sess-detail',
     useSessions: (selector) => selector({ byId: { 'sess-detail': { cwd: workspace } } }),
@@ -303,7 +352,7 @@ test('readiness chips and per-row markers follow the Host signal', async () => {
   }
 
   // Live readiness: the Ready chip exists and rows carry a marker.
-  globalThis.fetch = withReadiness('live')
+  useFetch(withReadiness('live'))
   const props = {
     sessionId: 'sess-ready',
     useSessions: (selector) => selector({ byId: { 'sess-ready': { cwd: workspace } } }),
@@ -317,14 +366,14 @@ test('readiness chips and per-row markers follow the Host signal', async () => {
 
   // Unavailable readiness: no readiness chip is offered at all, because the
   // question could not be asked.
-  globalThis.fetch = withReadiness('unavailable')
+  useFetch(withReadiness('unavailable'))
   const dark = await renderSettled(BeadsPanel, props)
   assert.doesNotMatch(dark, />Ready</)
   assert.doesNotMatch(dark, /class="bv-ready"/)
 })
 
 test('a long comment thread opens collapsed and can be expanded', async () => {
-  globalThis.fetch = hostFetch()
+  useFetch(hostFetch())
   const props = {
     sessionId: 'sess-comments',
     useSessions: (selector) => selector({ byId: { 'sess-comments': { cwd: workspace } } }),
@@ -363,14 +412,59 @@ test('a long comment thread opens collapsed and can be expanded', async () => {
   assert.match(expanded, /Collapse/)
 })
 
+test('a language change from the Host reaches the rendered copy', async () => {
+  // The Host re-renders slot occupants on a locale change, but the panel also
+  // swaps its own dictionary through the subscription, so this asserts the wiring
+  // that does not depend on the Host remembering to re-render us.
+  // `renderSettled` unmounts (and therefore unsubscribes) when it returns, so the
+  // listener is kept by reference rather than looked up in a live set.
+  //
+  // The fake models the real contract: subscribers are called with NO argument and
+  // must read the snapshot back from the service. Passing a snapshot here would
+  // have hidden the crash the running app logged.
+  let notify = null
+  let active = 'en'
+  mod.__test.setLanguage('en')
+  mod.__test.setLocaleService({
+    subscribe(listener) {
+      notify = listener
+      return () => {}
+    },
+    getSnapshot: () => ({ active }),
+  })
+  useFetch(hostFetch())
+  const props = {
+    sessionId: 'sess-2',
+    useSessions: (selector) => selector({ byId: { 'sess-2': { cwd: workspace } } }),
+    useTabInfo: () => ({ tab: { visible: true, actions: {} } }),
+    inputActions: null,
+  }
+
+  const english = await renderSettled(BeadsPanel, props)
+  assert.match(english, /Search issues/)
+  assert.match(english, /shown/)
+
+  assert.equal(typeof notify, 'function', 'the panel must subscribe to locale changes')
+  active = 'zh'
+  notify()
+
+  const chinese = await renderSettled(BeadsPanel, props)
+  assert.match(chinese, /搜索议题/)
+  assert.match(chinese, /共 \d+ 条/)
+  assert.doesNotMatch(chinese, /Search issues/)
+
+  mod.__test.setLanguage('en')
+  mod.__test.setLocaleService(null)
+})
+
 test('the Refresh control bypasses the Host cache exactly once', async () => {
   const urls = []
-  globalThis.fetch = async (url) => {
+  useFetch(async (url) => {
     urls.push(String(url))
     const cwd = new URL(String(url)).searchParams.get('cwd')
     const body = await readOverview({ cwd, bin })
     return { ok: true, status: 200, json: async () => body, text: async () => '' }
-  }
+  })
   capturedRows = []
   capturedControls = []
   const props = {
@@ -411,12 +505,12 @@ test('an empty tracker and a too-narrow filter say different things', async () =
     inputActions: null,
   }
 
-  globalThis.fetch = serve([])
+  useFetch(serve([]))
   const empty = await renderSettled(BeadsPanel, props)
   assert.match(empty, /no issues yet/)
   assert.doesNotMatch(empty, /matches this filter/)
 
-  globalThis.fetch = serve([
+  useFetch(serve([
     {
       id: 'p-aaa11',
       title: 'Only one',
@@ -429,15 +523,113 @@ test('an empty tracker and a too-narrow filter say different things', async () =
       dependencyCount: 0,
       labels: [],
     },
-  ])
+  ]))
   // The default filter is "active", which excludes the single closed issue.
   const filtered = await renderSettled(BeadsPanel, props)
   assert.match(filtered, /matches this filter/)
   assert.doesNotMatch(filtered, /no issues yet/)
 })
 
+test('every list row carries a coloured badge for status, priority and type', async () => {
+  useFetch(hostFetch())
+  const props = {
+    sessionId: 'sess-badges',
+    useSessions: (selector) => selector({ byId: { 'sess-badges': { cwd: workspace } } }),
+    useTabInfo: () => ({ tab: { visible: true, actions: {} } }),
+    inputActions: null,
+  }
+  capturedRows = []
+  capturedControls = []
+  const out = await renderSettled(BeadsPanel, props)
+
+  // One row per fixture issue, and each row shows all three dimensions.
+  const rows = out.split('class="bv-row"').slice(1)
+  assert.ok(rows.length >= 3, 'the list renders the fixture issues')
+  for (const row of rows) {
+    assert.match(row, /class="bv-badge bv-badge-solid bv-badge-status/, 'each row has a status badge')
+    assert.match(row, /class="bv-badge bv-badge-solid bv-badge-priority/, 'each row has a priority badge')
+    assert.match(row, /class="bv-badge bv-badge-solid bv-badge-type/, 'each row has a type badge')
+  }
+
+  // The fills differ across the three dimensions rather than all sharing one.
+  const fills = [...out.matchAll(/bv-badge-solid bv-badge-(status|priority|type)" style="background:([^;"]+)/g)]
+    .map((m) => [m[1], m[2]])
+  const statusFills = new Set(fills.filter((f) => f[0] === 'status').map((f) => f[1]))
+  const priorityFills = new Set(fills.filter((f) => f[0] === 'priority').map((f) => f[1]))
+  assert.ok(statusFills.size >= 2, 'distinct statuses get distinct fills')
+  assert.ok(priorityFills.size >= 2, 'distinct priorities get distinct fills')
+})
+
+test('the slash shortcut never steals focus from the composer', async () => {
+  useFetch(hostFetch())
+  // A composer is a contenteditable, and the browser reports its own node from
+  // document.activeElement — neither is an INPUT or a TEXTAREA. That is exactly
+  // why "/" was hijacked while the user was typing a slash command.
+  const composer = {
+    tagName: 'DIV',
+    isContentEditable: true,
+    closest: (selector) => (selector.includes('contenteditable') ? composer : null),
+  }
+  const plainBody = { tagName: 'BODY', isContentEditable: false, closest: () => null }
+
+  const props = {
+    sessionId: 'sess-slash',
+    useSessions: (selector) => selector({ byId: { 'sess-slash': { cwd: workspace } } }),
+    useTabInfo: () => ({ tab: { visible: true, actions: {} } }),
+    inputActions: null,
+  }
+  await renderSettled(BeadsPanel, props)
+
+  const keydown = [...(windowListeners.get('keydown') ?? [])]
+  assert.ok(keydown.length > 0, 'the panel installs a keydown listener while visible')
+
+  const press = (target, key) => {
+    let prevented = false
+    const event = { key, defaultPrevented: false, preventDefault() { prevented = true }, stopPropagation() {} }
+    globalThis.document = { activeElement: target }
+    for (const handler of keydown) handler(event)
+    return prevented
+  }
+
+  assert.equal(press(composer, '/'), false, 'a slash typed in the composer must not be prevented')
+
+  // The browser reports the nearest element with a box, so a caret inside a
+  // paragraph of the composer reports that paragraph, not the editor root.
+  const leaf = {
+    tagName: 'P',
+    isContentEditable: true,
+    closest: (selector) => (selector.includes('contenteditable') ? composer : null),
+  }
+  assert.equal(press(leaf, '/'), false, 'a slash typed inside the composer body must not be prevented')
+
+  // A read-only region inside an editable-looking tree is still typing territory
+  // as far as a shortcut is concerned.
+  const nested = { tagName: 'SPAN', isContentEditable: false, closest: () => null }
+  assert.equal(press(nested, '/'), true, 'a plain non-editable node still opens the search box')
+
+  // From the page body it still focuses the panel's own search box.
+  assert.equal(press(plainBody, '/'), true, 'a slash outside any field opens the search box')
+
+  // A modifier combination belongs to the host, not to this panel.
+  assert.equal(press(plainBody, 'k'), false)
+})
+
+test('the slash shortcut stays inert while the panel is hidden', async () => {
+  useFetch(hostFetch())
+  const props = {
+    sessionId: 'sess-hidden',
+    useSessions: (selector) => selector({ byId: { 'sess-hidden': { cwd: workspace } } }),
+    // keepMounted keeps this body alive behind another tab.
+    useTabInfo: () => ({ tab: { visible: false, actions: {} } }),
+    inputActions: null,
+  }
+  windowListeners.clear()
+  await renderSettled(BeadsPanel, props)
+  assert.equal((windowListeners.get('keydown') ?? []).length, 0, 'a hidden panel installs no keydown listener')
+})
+
 test('a failing route renders the failure card with its hint', async () => {
-  globalThis.fetch = async () => ({ ok: true, status: 200, json: async () => ({ ok: false, code: 'no-workspace', message: 'This project has no Beads workspace.', cwd: '/tmp/x' }), text: async () => '' })
+  useFetch(async () => ({ ok: true, status: 200, json: async () => ({ ok: false, code: 'no-workspace', message: 'This project has no Beads workspace.', cwd: '/tmp/x' }), text: async () => '' }))
   const out = await renderSettled(BeadsPanel, {
     sessionId: 'sess-2',
     useSessions: (selector) => selector({ byId: { 'sess-2': { cwd: workspace } } }),
@@ -451,9 +643,9 @@ test('a failing route renders the failure card with its hint', async () => {
 })
 
 test('a throwing transport renders the error text instead of crashing', async () => {
-  globalThis.fetch = async () => {
+  useFetch(async () => {
     throw new Error('network down')
-  }
+  })
   const out = await renderSettled(BeadsPanel, {
     sessionId: 'sess-3',
     useSessions: (selector) => selector({ byId: { 'sess-3': { cwd: workspace } } }),
@@ -464,7 +656,7 @@ test('a throwing transport renders the error text instead of crashing', async ()
 })
 
 test('a missing tab record does not break the panel', async () => {
-  globalThis.fetch = hostFetch()
+  useFetch(hostFetch())
   const out = await renderSettled(BeadsPanel, {
     sessionId: 'sess-4',
     useSessions: (selector) => selector({ byId: { 'sess-4': { cwd: workspace } } }),

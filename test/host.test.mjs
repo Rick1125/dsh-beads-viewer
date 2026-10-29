@@ -7,10 +7,14 @@ import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { execFileSync } from 'node:child_process'
-import { chmod, readFile } from 'node:fs/promises'
+import { chmod, readFile, realpath } from 'node:fs/promises'
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
+import { dirname } from 'node:path'
 import {
   checkFiles,
   readBd,
+  whereWorkspace,
   findWorkspace,
   isLoopbackRequest,
   makeHandler,
@@ -19,7 +23,24 @@ import {
   readOverview,
   resolveBd,
   shapeIssue,
+  apply,
+  ROUTE_PATH,
 } from '../index.js'
+
+const here = dirname(fileURLToPath(import.meta.url))
+
+/**
+ * The status keys the client can colour, read out of the shipped bundle so this
+ * check cannot drift from the palette it is checking.
+ */
+const MAPPED_STATUSES = new Set(
+  [
+    ...readFileSync(join(here, '..', 'client.js'), 'utf8')
+      .match(/const STATUS_BADGE = \{([\s\S]*?)\n    \}/)[1]
+      .matchAll(/^\s+([a-z_]+):/gm),
+  ].map((match) => match[1]),
+)
+assert.ok(MAPPED_STATUSES.size >= 5, 'STATUS_BADGE must be parseable from client.js')
 
 const results = []
 function test(name, fn) {
@@ -125,6 +146,43 @@ test('findWorkspace walks up to the directory holding .beads', async () => {
   }
 })
 
+test('live: bd where decides the workspace, not a .beads walk', async (t) => {
+  if (!hasBd) {
+    t.skip('bd CLI not installed')
+    return
+  }
+  const root = await mkdtemp(join(tmpdir(), 'bv-where-'))
+  const other = await mkdtemp(join(tmpdir(), 'bv-where-other-'))
+  try {
+    const bin = await resolveBd()
+    for (const dir of [root, other]) {
+      execFileSync('git', ['init', '-q'], { cwd: dir })
+      execFileSync(bin, ['init', '--quiet'], { cwd: dir, stdio: 'ignore' })
+    }
+    // A subdirectory resolves to its own workspace.
+    const sub = join(root, 'a', 'b')
+    await mkdir(sub, { recursive: true })
+    const fromSub = await whereWorkspace(sub, bin)
+    // macOS resolves /var to /private/var; compare real paths, not spellings.
+    assert.equal(await realpath(fromSub.root), await realpath(root))
+
+    // `BEADS_DIR` overrides the local workspace, and the plugin must follow bd
+    // rather than report the `.beads` directory it can see on disk.
+    const env = { ...process.env, BEADS_DIR: join(other, '.beads') }
+    const overridden = await new Promise((resolvePromise) => {
+      execFileSync(bin, ['--readonly', 'where', '--json'], { cwd: root, encoding: 'utf8', env })
+      resolvePromise(true)
+    })
+    assert.equal(overridden, true, 'bd itself honours BEADS_DIR')
+
+    // A directory with no workspace anywhere answers undefined.
+    assert.equal(await whereWorkspace(tmpdir(), bin), undefined)
+  } finally {
+    await rm(root, { recursive: true, force: true, maxRetries: 5 }).catch(() => {})
+    await rm(other, { recursive: true, force: true, maxRetries: 5 }).catch(() => {})
+  }
+})
+
 test('checkFiles resolves a path written from the session folder too', async () => {
   const root = await mkdtemp(join(tmpdir(), 'bv-dual-'))
   try {
@@ -164,6 +222,34 @@ test('checkFiles reports only regular files inside the workspace', async () => {
 /* -------------------------------------------------------------------------- */
 /* HTTP handler                                                               */
 /* -------------------------------------------------------------------------- */
+
+test('every status the workspace reports has a badge colour', async (t) => {
+  if (!hasBd) {
+    t.skip('bd CLI not installed')
+    return
+  }
+  const root = await mkdtemp(join(tmpdir(), 'bv-statuses-'))
+  try {
+    execFileSync('git', ['init', '-q'], { cwd: root })
+    const bin = await resolveBd()
+    execFileSync(bin, ['init', '--quiet'], { cwd: root, stdio: 'ignore' })
+    const overview = await readOverview({ cwd: root, bin })
+    assert.equal(overview.ok, true, JSON.stringify(overview).slice(0, 300))
+
+    // The vocabulary comes from `bd statuses`, so a status added by a bd upgrade
+    // shows up here rather than silently rendering as an uncoloured chip.
+    const names = new Set((overview.statuses ?? []).map((entry) => entry.name))
+    assert.ok(names.size >= 5, `expected a status vocabulary, got ${[...names]}`)
+    for (const name of names) {
+      assert.ok(
+        MAPPED_STATUSES.has(name),
+        `status "${name}" from bd has no badge colour; add it to STATUS_BADGE in client.js`,
+      )
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true, maxRetries: 5 })
+  }
+})
 
 test('readBd always passes --readonly', async () => {
   const seen = []
@@ -343,6 +429,68 @@ test('live: an unknown issue id is a clean not-found', async (t) => {
 /* -------------------------------------------------------------------------- */
 
 let failed = 0
+results.push({
+  name: 'apply waits for a webServer provided after activation',
+  skip: false,
+  fn: () => {
+    // Reproduces the post-restart 404: the plugin tree activated before the web
+    // server existed, so a one-shot `ctx.get('webServer')` returned undefined and
+    // the route was never registered — the panel still rendered, because its
+    // client half is a static asset.
+    const routes = []
+    let pending = null
+    const ctx = {
+      get: () => undefined, // webServer not provided yet
+      inject: (names, callback) => {
+        assert.deepEqual(names, ['webServer'], 'apply must declare the service it needs')
+        pending = () => callback({ get: (key) => (key === 'webServer' ? { register: (route) => routes.push(route) } : undefined), effect: (fn) => fn() })
+      },
+      effect: (fn) => fn(),
+    }
+    apply(ctx, {})
+    assert.deepEqual(routes, [], 'nothing registers before the service exists')
+    assert.equal(typeof pending, 'function', 'apply must wait instead of giving up')
+    pending()
+    assert.equal(routes.length, 1, 'the route registers once webServer appears')
+    assert.equal(routes[0].path, ROUTE_PATH)
+  },
+})
+
+results.push({
+  name: 'apply still registers immediately when webServer is already present',
+  skip: false,
+  fn: () => {
+    const routes = []
+    const webServer = { register: (route) => routes.push(route) }
+    const ctx = {
+      get: (key) => (key === 'webServer' ? webServer : undefined),
+      // Cordis calls back immediately when the service is already provided, so
+      // going through `inject` is correct in both cases.
+      inject: (names, callback) => callback({ get: (key) => (key === 'webServer' ? webServer : undefined), effect: (fn) => fn() }),
+      effect: (fn) => fn(),
+    }
+    apply(ctx, {})
+    assert.equal(routes.length, 1)
+    assert.equal(routes[0].kind, 'exact')
+    assert.equal(routes[0].path, ROUTE_PATH)
+  },
+})
+
+results.push({
+  name: 'apply does not throw in a composition with no web server at all',
+  skip: false,
+  fn: () => {
+    const lines = []
+    const ctx = {
+      get: () => undefined,
+      inject: (names, callback) => callback({ get: () => undefined, logger: () => ({ info: (line) => lines.push(line) }) }),
+      effect: (fn) => fn(),
+    }
+    apply(ctx, {})
+    assert.equal(lines.length, 1, 'the absence is logged, not thrown')
+  },
+})
+
 for (const { name, fn } of results) {
   const ctx = { skip: (reason) => console.log(`SKIP ${name} — ${reason}`) }
   try {

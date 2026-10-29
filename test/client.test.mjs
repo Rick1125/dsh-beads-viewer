@@ -264,6 +264,126 @@ test('relativeTime degrades gracefully', () => {
 
 /* -------------------------------------------------------------------------- */
 
+results.push({
+  name: 'a bullet run after a numbered run is a separate list, not item N+1',
+  fn: () => {
+    // Reported in the panel: a `- foo` list directly after a `1. bar` list rendered
+    // as "4." / "5." because the block took its type from the first marker only.
+    const md = `1. one
+2. two
+
+- alpha
+- beta
+`
+    const blocks = parseBlocks(md)
+    const lists = blocks.filter((b) => b.type === 'list')
+    assert.equal(lists.length, 2, 'two lists, one of each kind')
+    assert.equal(lists[0].ordered, true)
+    assert.equal(lists[1].ordered, false, 'the bullet run must stay unordered')
+    assert.equal(lists[1].items.length, 2)
+  },
+})
+
+results.push({
+  name: 'list markers get a left inset from the panel edge',
+  fn: () => {
+    // Requested: the numbers sat too close to the left edge of the detail pane. The
+    // marker lives in the list padding, so that padding is the gap.
+    const css = readFileSync(join(here, '..', 'client.js'), 'utf8')
+    const sheet = css.replace(/\/\*[\s\S]*?\*\//g, '')
+    const rule = (selector) => {
+      for (const [, sel, body] of sheet.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+        if (sel.trim() === selector) return body
+      }
+      return undefined
+    }
+    for (const selector of ['.bv-mlist', '.bv-mlist-nested']) {
+      const body = rule(selector)
+      assert.ok(body !== undefined, `${selector} must exist`)
+      const padding = /padding-left:\s*([0-9.]+)em/.exec(body)
+      assert.ok(padding, `${selector} must indent in em so it scales with the font`)
+      assert.ok(
+        Number(padding[1]) >= 1.5,
+        `${selector} needs room for the marker plus a gap, got ${padding[1]}em`,
+      )
+    }
+  },
+})
+
+results.push({
+  name: 'numbered and bulleted lists share one marker gutter',
+  fn: () => {
+    // Reported: an `ol` looked less indented than a `ul` beside it. Native markers
+    // sit just outside the content box at whatever width the glyph needs, so "10."
+    // reaches further left than a bullet. The gutter is a fixed box now, which also
+    // keeps two-digit numbers from shifting the text.
+    const css = readFileSync(join(here, '..', 'client.js'), 'utf8')
+    const sheet = css.replace(/\/\*[\s\S]*?\*\//g, '')
+    const rule = (selector) => {
+      for (const [, sel, body] of sheet.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+        if (sel.trim() === selector) return body
+      }
+      return undefined
+    }
+
+    // Native markers must be off, or the two kinds would keep different gutters.
+    assert.match(rule('.bv-mlist'), /list-style:\s*none/, 'the native marker must be replaced')
+
+    // Both kinds draw a marker in the same absolute box.
+    const base = rule('.bv-mli::before')
+    assert.ok(base !== undefined, '.bv-mli::before must define the gutter')
+    assert.match(base, /position:\s*absolute/, 'the gutter must be out of flow')
+    assert.match(base, /width:\s*1\.9em/, 'the gutter must be one fixed width')
+    assert.match(base, /text-align:\s*right/, 'markers must be flush with the text')
+    // The trailing gap must be small: a wide gutter with a big pad pushed the
+    // ordered text further right than the bulleted text and the two lists stopped
+    // lining up, which is what the second report was about.
+    const pad = /padding-right:\s*([0-9.]+)em/.exec(base)
+    assert.ok(pad, 'the gutter must declare its trailing gap explicitly')
+    assert.ok(
+      Number(pad[1]) <= 0.35,
+      `trailing gap too wide (${pad[1]}em): it pushes the numbered text right of the bulleted text`,
+    )
+    assert.match(base, /left:\s*-1\.9em/, 'the gutter must sit outside the content box')
+
+    // Each kind supplies content; neither overrides the geometry.
+    assert.match(rule('ul.bv-mlist>.bv-mli::before'), /content:\s*"•"/, 'bullets need a glyph')
+    assert.match(
+      rule('ol.bv-mlist>.bv-mli::before'),
+      /content:\s*counter\(bv-li\)/,
+      'numbers must come from a counter',
+    )
+    assert.match(rule('ol.bv-mlist'), /counter-reset:\s*bv-li/, 'the counter must reset per list')
+    assert.match(rule('ol.bv-mlist>.bv-mli'), /counter-increment:\s*bv-li/, 'items must advance the counter')
+
+    // Nested lists narrow the gutter; they must not fall back to a native marker.
+    assert.match(
+      rule('.bv-mlist-nested>.bv-mli::before'),
+      /width:\s*1\.7em/,
+      'nested gutters must match the nested indent',
+    )
+
+    // An ordered list gets a WIDER gutter than a bulleted one, on purpose: a number
+    // is wider than a bullet, so at equal width its ink sits further left and the
+    // list reads as less indented. Widening the gutter both lines the marker ink up
+    // and pushes the numbered text further right.
+    const olIndent = /padding-left:\s*([0-9.]+)em/.exec(rule('ol.bv-mlist') ?? '')
+    const ulIndent = /padding-left:\s*([0-9.]+)em/.exec(rule('.bv-mlist') ?? '')
+    assert.ok(olIndent !== null, 'ol must declare its own indent')
+    assert.ok(ulIndent !== null, 'the shared indent must be declared')
+    assert.ok(
+      Number(olIndent[1]) > Number(ulIndent[1]),
+      `an ordered list must indent further than a bulleted one (${olIndent[1]}em vs ${ulIndent[1]}em)`,
+    )
+    // And its marker gutter must follow that indent, or the marker would sit in the
+    // wrong place inside the wider padding.
+    const olGutter = rule('ol.bv-mlist>.bv-mli::before')
+    assert.ok(olGutter !== undefined, 'ol must override the gutter geometry')
+    assert.match(olGutter, /left:\s*-2\.35em/, 'the ol gutter must offset by its own indent')
+    assert.match(olGutter, /width:\s*2\.35em/, 'the ol gutter must be as wide as its indent')
+  },
+})
+
 let failed = 0
 for (const { name, fn } of results) {
   try {

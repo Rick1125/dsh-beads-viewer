@@ -134,8 +134,34 @@ async function hasBeadsDir(dir) {
 }
 
 /**
- * Walk up from `start` looking for a directory that holds `.beads`, mirroring
- * how `bd` itself resolves its workspace from a subdirectory.
+ * Ask `bd` which workspace it would open for `start`.
+ *
+ * `bd where` is the authority, not a `.beads` directory walk: `BEADS_DIR`
+ * overrides a local workspace, and a worktree can route elsewhere entirely. A
+ * walk would then report a workspace `bd` never opens — or miss the one it does.
+ *
+ * @param {string} start - session working directory.
+ * @param {string} bin - a resolved executable.
+ * @returns {Promise<{ root: string, beadsDir: string } | undefined>}
+ */
+export async function whereWorkspace(start, bin) {
+  const result = await runBd(['where', '--json'], start, bin)
+  if (!result.ok) return undefined
+  const parsed = parseBdJson(result.stdout)
+  const path = parsed.ok ? parsed.value?.path : undefined
+  if (typeof path !== 'string' || path === '') return undefined
+  // `bd where` names the `.beads` directory; the panel wants the project root,
+  // because that is what every issue-relative path is resolved against.
+  const beadsDir = resolve(path)
+  const root = beadsDir.endsWith(`${sep}.beads`) ? beadsDir.slice(0, -'.beads'.length - 1) : beadsDir
+  return { root, beadsDir }
+}
+
+/**
+ * Walk up from `start` looking for a directory that holds `.beads`.
+ *
+ * Kept as the fallback for a `bd` too old to answer `where --json`, and used by
+ * the tests as the plain filesystem question.
  *
  * @param {string} start - session working directory.
  * @returns {Promise<string | undefined>} the workspace root.
@@ -575,23 +601,24 @@ export function makeHandler(deps = {}) {
         sendJson(res, 400, { ok: false, code: 'no-cwd', message: `Not a directory: ${requested}` })
         return
       }
-      const workspace = await findWorkspace(requested)
+      const bin = await resolveBdImpl()
+      if (bin === undefined) {
+        sendJson(res, 200, {
+          ok: false,
+          code: 'bd-missing',
+          cwd: requested,
+          message: 'The bd CLI is not on this machine’s PATH.',
+        })
+        return
+      }
+      const located = await whereWorkspace(requested, bin)
+      const workspace = located?.root ?? (await findWorkspace(requested))
       if (workspace === undefined) {
         sendJson(res, 200, {
           ok: false,
           code: 'no-workspace',
           cwd: requested,
           message: 'This project has no Beads workspace (no .beads directory).',
-        })
-        return
-      }
-      const bin = await resolveBdImpl()
-      if (bin === undefined) {
-        sendJson(res, 200, {
-          ok: false,
-          code: 'bd-missing',
-          cwd: workspace,
-          message: 'The bd CLI is not on this machine’s PATH.',
         })
         return
       }
@@ -628,14 +655,35 @@ export function makeHandler(deps = {}) {
  * @param {Record<string, unknown>} [config] - the Loader row config.
  */
 export function apply(ctx, config = {}) {
-  const webServer = typeof ctx.get === 'function' ? ctx.get('webServer') : undefined
-  if (webServer === undefined || typeof webServer.register !== 'function') {
-    ctx.logger?.('beads-viewer')?.info?.('webServer absent; the Beads panel has no data route in this composition')
-    return
-  }
   const handler = makeHandler(config.handlerDeps ?? {})
-  const dispose = webServer.register({ kind: 'exact', path: ROUTE_PATH, handler })
-  if (typeof ctx.effect === 'function') {
-    ctx.effect(() => dispose, 'beads-viewer: data route')
+
+  /**
+   * Register the read route once `webServer` exists.
+   *
+   * This must WAIT for the service rather than read it once at activation: on a
+   * fresh boot the plugin tree can activate before the web server is provided, and
+   * the previous one-shot `ctx.get('webServer')` then returned undefined, logged a
+   * line, and left the route unregistered for the whole session. The panel still
+   * rendered — its client half is a static asset — so the failure looked like
+   * "HTTP 404 but the search bar is there".
+   */
+  const wire = (scope) => {
+    const webServer = typeof scope.get === 'function' ? scope.get('webServer') : undefined
+    if (webServer === undefined || typeof webServer.register !== 'function') {
+      scope.logger?.('beads-viewer')?.info?.('webServer absent; the Beads panel has no data route in this composition')
+      return
+    }
+    const dispose = webServer.register({ kind: 'exact', path: ROUTE_PATH, handler })
+    // One line at boot: without it a missing route is indistinguishable from a
+    // failing one, which is exactly the confusion this fix came from.
+    scope.logger?.('beads-viewer')?.info?.(`data route registered at ${ROUTE_PATH}`)
+    if (typeof scope.effect === 'function') {
+      scope.effect(() => dispose, 'beads-viewer: data route')
+    }
   }
+
+  // Same idiom the client half uses for its slot services: declare the dependency
+  // and let Cordis call back when it is available.
+  if (typeof ctx.inject === 'function') ctx.inject(['webServer'], (scope) => wire(scope))
+  else wire(ctx)
 }

@@ -265,7 +265,16 @@ window.__ModuleLoader__.load({
           while (index < lines.length) {
             const item = /^(\s*)([-*+]|\d+[.)])\s+(.*)$/.exec(lines[index])
             if (item) {
-              items.push({ indent: item[1].replace(/\t/g, '  ').length, ordered, text: item[3] })
+              const itemOrdered = /\d/.test(item[2])
+              // A bare bullet run right after a numbered one used to inherit the
+              // numbered marker, so a `- foo` under a `1. bar` list rendered as
+              // "4." instead of a bullet. Only continue while the marker KIND
+              // matches; a change closes this list and the outer loop opens a new
+              // one of the right type.
+              if (itemOrdered !== ordered && item[1].length === 0) {
+                break
+              }
+              items.push({ indent: item[1].replace(/\t/g, '  ').length, ordered: itemOrdered, text: item[3] })
               index += 1
               // Continuation lines (indented, not a new bullet) belong to the item.
               while (
@@ -718,9 +727,121 @@ window.__ModuleLoader__.load({
       })
     }
 
-    function Badge({ children, tone, title }) {
-      const style = tone === undefined ? undefined : { color: tone, borderColor: tone }
-      return h('span', { className: 'bv-badge', style, title }, children)
+    /*
+     * Solid badge palette.
+     *
+     * Hue carries the meaning, so a reader can triage a list without reading the
+     * text: red is urgent or broken, amber is a warning, blue is normal work,
+     * green is a task, grey is inert. Every fill is a `--dsw-static-*` mid-tone
+     * and every label colour was chosen by computing contrast, not by eye — each
+     * pair clears WCAG AA (4.5:1). Static mid-tones are identical in both themes
+     * (verified against the shipped theme CSS), so a filled badge reads the same
+     * on a light and a dark sidebar; the ink is dark-on-warm and white-on-dark
+     * per fill rather than one ink for all.
+     */
+    /*
+     * Ink is derived, never chosen per badge: a light fill takes black text and a
+     * dark fill takes white. The threshold is WCAG's own crossover — the
+     * luminance at which black and white are exactly equal in contrast
+     * (`sqrt(0.05 * 1.05) - 0.05` ≈ 0.179). Picking ink by eye is what produced
+     * a palette where some badges had white text on a mid-tone and some had
+     * black, with no rule behind the difference.
+     */
+    const INK_DARK = '#0f0f0f'
+    const INK_LIGHT = '#ffffff'
+    const INK_CROSSOVER = 0.1791
+
+    /** Relative luminance of a `#rrggbb` string (WCAG 2.x). */
+    function luminanceOf(hex) {
+      const value = String(hex).replace('#', '')
+      const channel = (index) => {
+        const c = parseInt(value.slice(index, index + 2), 16) / 255
+        return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4
+      }
+      return 0.2126 * channel(0) + 0.7152 * channel(2) + 0.0722 * channel(4)
+    }
+
+    /** Black or white, whichever the fill calls for. */
+    function inkFor(hex) {
+      return luminanceOf(hex) > INK_CROSSOVER ? INK_DARK : INK_LIGHT
+    }
+
+    /**
+     * One badge fill. `lit` is the literal that stands in when the CSS variable
+     * is missing, and it is also what the ink rule is computed from, so the two
+     * can never disagree.
+     */
+    const fill = (token, lit) => ({ bg: `var(--dsw-static-${token}, ${lit})`, ink: inkFor(lit) })
+
+    /** @type {Record<string, {bg: string, ink: string}>} */
+    const PRIORITY_BADGE = {
+      0: fill('red-500', '#ef4444'),
+      1: fill('amber-500', '#f59e0b'),
+      2: fill('blue-500', '#3b82f6'),
+      // Cyan is not one of this theme's six hue families, so it is a literal:
+      // the point is a hue the eye can tell from P2's blue at a glance.
+      3: { bg: '#06b6d4', ink: inkFor('#06b6d4') },
+      4: { bg: '#a2a4a6', ink: inkFor('#a2a4a6') },
+    }
+
+    const TYPE_BADGE = {
+      bug: fill('red-500', '#ef4444'),
+      // Fuchsia, not the indigo it was: as indigo it sat deltaE 5 from P2's blue,
+      // right beside it in every row. This is 50 from its nearest neighbour.
+      feature: { bg: '#d946ef', ink: inkFor('#d946ef') },
+      // Deep violet: as slate it was indistinguishable from `closed`'s grey and
+      // from `pinned`, and no slate tone could clear both greys at once.
+      epic: { bg: '#581c87', ink: inkFor('#581c87') },
+      task: fill('green-500', '#22c55e'),
+      // Orange: as amber-600 it sat 18 from P1's amber.
+      decision: { bg: '#ea580c', ink: inkFor('#ea580c') },
+      chore: { bg: '#545557', ink: inkFor('#545557') },
+    }
+
+    const STATUS_BADGE = {
+      // Indigo, not blue-600: P2 is already blue and the two sat 19 apart on the
+      // same row, so "open" and "medium priority" looked like one colour.
+      open: { bg: '#4f46e5', ink: inkFor('#4f46e5') },
+      // Yellow, not the indigo/amber it was: `open` is blue and the two sat
+      // within deltaE 18, which reads as the same colour at a glance. Yellow is
+      // 158 away from that blue and 34 from P1's amber, so both neighbours are
+      // distinguishable.
+      in_progress: { bg: '#fde047', ink: inkFor('#fde047') },
+      blocked: fill('red-500', '#ef4444'),
+      closed: { bg: '#545557', ink: inkFor('#545557') },
+      deferred: { bg: '#a2a4a6', ink: inkFor('#a2a4a6') },
+      // Navy, not the slate it shared with `closed`/`chore`: that slate was 18
+      // from the greys, which is below the point where a hue reads as different.
+      pinned: { bg: '#1e3a8a', ink: inkFor('#1e3a8a') },
+      // Teal, not the indigo it was: indigo sat 25 from P2's blue.
+      hooked: { bg: '#0d9488', ink: inkFor('#0d9488') },
+    }
+
+    /** The badge pair for one dimension value, or undefined when unlisted. */
+    function badgeFor(kind, value) {
+      const table = kind === 'priority' ? PRIORITY_BADGE : kind === 'type' ? TYPE_BADGE : STATUS_BADGE
+      const key = kind === 'priority' ? value : String(value ?? '').toLowerCase()
+      return table[key]
+    }
+
+    /**
+     * A filled badge. `kind` picks the dimension so the palette stays in one place;
+     * `plain` renders the old outline chip for values with no assigned hue.
+     */
+    function Badge({ children, kind, value, title, plain }) {
+      const pair = plain ? undefined : badgeFor(kind, value)
+      if (pair === undefined) {
+        return h('span', { className: 'bv-badge', title }, children)
+      }
+      return h(
+        'span',
+        {
+          className: `bv-badge bv-badge-solid bv-badge-${kind}`,
+          style: { background: pair.bg, color: pair.ink },
+          title: title ?? `${kind}: ${value}`,
+        },
+        children,
+      )
     }
 
     function IconButton({ label, onClick, title, children, active }) {
@@ -756,14 +877,27 @@ window.__ModuleLoader__.load({
      * ------------------------------------------------------------------ */
 
     const SORTS = [
-      { id: 'updated', label: 'Updated' },
-      { id: 'priority', label: 'Priority' },
-      { id: 'created', label: 'Created' },
-      { id: 'id', label: 'ID' },
+      { id: 'updated', labelKey: 'sortUpdated' },
+      { id: 'priority', labelKey: 'sortPriority' },
+      { id: 'created', labelKey: 'sortCreated' },
+      { id: 'id', labelKey: 'sortId' },
     ]
 
     function BeadsPanel(props) {
       const { sessionId, useSessions, inputActions } = props
+      // Keep hook order fixed: the language subscription is declared before any
+      // early return. The Host re-renders slot occupants on a locale change, but
+      // this makes the copy correct even if it does not.
+      const [, setLocaleRevision] = React.useState(0)
+      React.useEffect(() => {
+        if (localeService === null || typeof localeService.subscribe !== 'function') return undefined
+        return localeService.subscribe(() => {
+          // Same contract as above: read the snapshot, do not expect an argument.
+          const active = localeService.getSnapshot?.()?.active
+          dictionary = active === 'zh' ? ZH : EN
+          setLocaleRevision((revision) => revision + 1)
+        })
+      }, [])
       // The tab seat hands every body one bound `useTabInfo`, stable for the
       // lifetime of this mount, so reading it once here keeps hook order fixed.
       const tabInfoHook = props.useTabInfo
@@ -822,8 +956,8 @@ window.__ModuleLoader__.load({
             // Readiness is bd's own answer; a row without the flag (an older
             // Host, or a failed `bd ready`) simply never matches this chip.
             if (issue.ready !== true) return false
-          } else if (status === 'blocked') {
-            if (issue.status === 'closed' || issue.ready !== false) return false
+          } else if (status === 'waiting') {
+            if (issue.status !== 'open' || issue.ready !== false) return false
           } else if (status === 'active') {
             if (issue.status === 'closed') return false
           } else if (status !== 'all' && issue.status !== status) return false
@@ -911,28 +1045,51 @@ window.__ModuleLoader__.load({
       )
 
       React.useEffect(() => {
+        // Refreshing on window focus is a courtesy for a visible panel; a
+        // `keepMounted` panel behind another tab would spend a `bd` call per
+        // window focus for nothing.
+        if (tabInfo?.tab?.visible === false) return undefined
         const onFocus = () => setRevision((value) => value + 1)
         window.addEventListener('focus', onFocus)
         return () => window.removeEventListener('focus', onFocus)
-      }, [])
+      }, [tabInfo?.tab?.visible])
 
       React.useEffect(() => {
+        // A window-level listener has to prove it may act before it does.
+        //
+        // `keepMounted` keeps this panel alive while another tab is in front, so
+        // without `visible` a hidden panel would still answer keys meant for the
+        // composer. And a `contenteditable` composer is neither an INPUT nor a
+        // TEXTAREA, so the old tag test let "/" be stolen from it — the composer
+        // lost focus mid-word and the next characters went into this search box.
+        if (tabInfo?.tab?.visible === false) return undefined
+        const editable = (node) => {
+          if (!node || typeof node !== 'object') return false
+          if (node.isContentEditable === true) return true
+          const tag = typeof node.tagName === 'string' ? node.tagName.toUpperCase() : ''
+          if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return true
+          // `closest` is the only reliable way to see the editable ancestor of
+          // the focused leaf the browser reports as activeElement.
+          return typeof node.closest === 'function' && node.closest('[contenteditable]:not([contenteditable="false"])') !== null
+        }
         const onKey = (event) => {
+          if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.altKey) return
           if (event.key === 'Escape' && openId !== null) {
+            // Escape closes this panel's detail view, but it must not be taken
+            // from the composer, where it may dismiss a menu of its own.
+            if (editable(document.activeElement)) return
             event.stopPropagation()
             setOpenId(null)
             return
           }
-          if (event.key === '/' && document.activeElement !== searchRef.current) {
-            const tag = document.activeElement?.tagName
-            if (tag === 'INPUT' || tag === 'TEXTAREA') return
-            event.preventDefault()
-            searchRef.current?.focus()
-          }
+          if (event.key !== '/') return
+          if (editable(document.activeElement)) return
+          event.preventDefault()
+          searchRef.current?.focus()
         }
         window.addEventListener('keydown', onKey)
         return () => window.removeEventListener('keydown', onKey)
-      }, [openId])
+      }, [openId, tabInfo?.tab?.visible])
 
       const refresh = () => {
         forceNextRef.current = true
@@ -991,18 +1148,18 @@ window.__ModuleLoader__.load({
                   ref: searchRef,
                   className: 'bv-search',
                   value: query,
-                  placeholder: 'Search issues…  ( / )',
+                  placeholder: t('search'),
                   onChange: (event) => setQuery(event.target.value),
                   spellCheck: false,
                 }),
-                h(IconButton, { label: '⟳', title: 'Refresh', onClick: refresh }),
+                h(IconButton, { label: '⟳', title: t('refresh'), onClick: refresh }),
               ),
               h(
                 'div',
                 { className: 'bv-chips' },
                 readinessLive
                   ? h(FilterChip, {
-                      label: 'Ready',
+                      label: t('filterReady'),
                       count: counts.ready ?? 0,
                       active: status === 'ready',
                       onClick: () => setStatus('ready'),
@@ -1011,49 +1168,52 @@ window.__ModuleLoader__.load({
                   : null,
                 readinessLive && hasEdges
                   ? h(FilterChip, {
-                      label: 'Blocked',
+                      // "Waiting", not "Blocked": `blocked` is a lifecycle status the
+                      // chip row already offers, while this counts open issues whose
+                      // blocking dependencies are still open.
+                      label: t('filterWaiting'),
                       count: counts.waiting ?? 0,
-                      active: status === 'blocked',
-                      onClick: () => setStatus('blocked'),
-                      tone: statusTone('blocked'),
+                      active: status === 'waiting',
+                      onClick: () => setStatus('waiting'),
+                      tone: 'var(--dsw-alias-state-warn-primary, #d29922)',
                     })
                   : null,
                 h(FilterChip, {
-                  label: 'Active',
+                  label: t('filterActive'),
                   count: counts.active,
                   active: status === 'active',
                   onClick: () => setStatus('active'),
                 }),
                 h(FilterChip, {
-                  label: 'Open',
+                  label: t('statusOpen'),
                   count: counts.open,
                   active: status === 'open',
                   onClick: () => setStatus('open'),
                   tone: statusTone('open'),
                 }),
                 h(FilterChip, {
-                  label: 'In progress',
+                  label: t('statusInProgress'),
                   count: counts.in_progress,
                   active: status === 'in_progress',
                   onClick: () => setStatus('in_progress'),
                   tone: statusTone('in_progress'),
                 }),
                 h(FilterChip, {
-                  label: 'Blocked',
+                  label: t('statusBlocked'),
                   count: counts.blocked,
                   active: status === 'blocked',
                   onClick: () => setStatus('blocked'),
                   tone: statusTone('blocked'),
                 }),
                 h(FilterChip, {
-                  label: 'Closed',
+                  label: t('statusClosed'),
                   count: counts.closed,
                   active: status === 'closed',
                   onClick: () => setStatus('closed'),
                   tone: statusTone('closed'),
                 }),
                 h(FilterChip, {
-                  label: 'All',
+                  label: t('filterAll'),
                   count: counts.total,
                   active: status === 'all',
                   onClick: () => setStatus('all'),
@@ -1068,11 +1228,11 @@ window.__ModuleLoader__.load({
                     className: 'bv-sort',
                     value: sort,
                     onChange: (event) => setSort(event.target.value),
-                    title: 'Sort',
+                    title: t('sortLabel'),
                   },
-                  SORTS.map((option) => h('option', { key: option.id, value: option.id }, option.label)),
+                  SORTS.map((option) => h('option', { key: option.id, value: option.id }, t(option.labelKey))),
                 ),
-                h('span', { className: 'bv-subtle' }, `${visible.length} shown`),
+                h('span', { className: 'bv-subtle' }, t('shown', { n: visible.length })),
               ),
               renderListBody(),
             )
@@ -1081,7 +1241,7 @@ window.__ModuleLoader__.load({
 
       function renderListBody() {
         if (list.loading && list.data === null) {
-          return h('div', { className: 'bv-empty' }, 'Loading Beads issues…')
+          return h('div', { className: 'bv-empty' }, t('loadingList'))
         }
         if (list.error) {
           return h('div', { className: 'bv-empty bv-error' }, list.error)
@@ -1121,33 +1281,40 @@ window.__ModuleLoader__.load({
               { className: 'bv-row-top' },
               h(StatusDot, { status: issue.status }),
               h('span', { className: 'bv-row-title' }, issue.title),
+              // The date rides with the title, as `bv` does: on the badge line it
+              // was pushed onto a third line by the badges and cost every row a
+              // line of height.
+              h('span', { className: 'bv-subtle bv-row-age' }, relativeTime(issue.updatedAt)),
             ),
             h(
               'div',
               { className: 'bv-row-meta' },
               h('span', { className: 'bv-mono bv-row-id' }, issue.id),
-              h(Badge, { tone: issue.priority <= 1 ? 'var(--dsw-alias-state-warn-primary, #d29922)' : undefined }, priorityLabel(issue.priority)),
-              h('span', { className: 'bv-subtle' }, issue.type),
+              // The three dimensions a triager scans for, each with its own hue:
+              // status, priority, then type. Previously type was plain text and
+              // priority only coloured at P0/P1, which read as an accident.
+              h(Badge, { kind: 'status', value: issue.status }, issue.status.replace(/_/g, ' ')),
+              h(Badge, { kind: 'priority', value: issue.priority }, priorityLabel(issue.priority)),
+              h(Badge, { kind: 'type', value: issue.type }, issue.type),
               // A startable issue says so; a blocked one keeps its dependency
               // count, which is the number that explains the wait.
               issue.ready === true
-                ? h('span', { className: 'bv-ready' }, 'ready')
+                ? h('span', { className: 'bv-ready' }, t('ready'))
                 : issue.ready === false && issue.status === 'open' && issue.dependencyCount > 0
-                  ? h('span', { className: 'bv-waiting' }, `waiting on ${issue.dependencyCount}`)
+                  ? h('span', { className: 'bv-waiting' }, t('waitingOn', { n: issue.dependencyCount }))
                   : null,
               issue.commentCount > 0 ? h('span', { className: 'bv-subtle' }, `💬 ${issue.commentCount}`) : null,
               issue.ready !== true && issue.dependencyCount > 0
                 ? h('span', { className: 'bv-subtle' }, `⛓ ${issue.dependencyCount}`)
                 : null,
-              h('span', { className: 'bv-subtle bv-right' }, relativeTime(issue.updatedAt)),
             ),
-            issue.labels.length > 0
-              ? h(
-                  'div',
-                  { className: 'bv-row-labels' },
-                  issue.labels.slice(0, 4).map((label) => h('span', { key: label, className: 'bv-label' }, label)),
-                )
-              : null,
+            // Always rendered, even when empty: it is the row's third track, and
+            // omitting it made label-less issues a line shorter than the rest.
+            h(
+              'div',
+              { className: 'bv-row-labels' },
+              issue.labels.slice(0, 4).map((label) => h('span', { key: label, className: 'bv-label' }, label)),
+            ),
           ),
         )
         return h(
@@ -1172,14 +1339,14 @@ window.__ModuleLoader__.load({
           h(
             'div',
             { className: 'bv-detailbar' },
-            h(IconButton, { label: '←', title: 'Back to the list (Esc)', onClick: () => setOpenId(null) }),
+            h(IconButton, { label: '←', title: t('back'), onClick: () => setOpenId(null) }),
             h('span', { className: 'bv-mono bv-detailid' }, openId),
             h('span', { className: 'bv-spacer' }),
-            h(IconButton, { label: '⧉', title: 'Copy issue id', onClick: () => copyId(openId) }),
-            h(IconButton, { label: '↵', title: 'Insert issue id into the composer', onClick: () => insertId(openId) }),
+            h(IconButton, { label: '⧉', title: t('copyIssueId'), onClick: () => copyId(openId) }),
+            h(IconButton, { label: '↵', title: t('insertIssueId'), onClick: () => insertId(openId) }),
           ),
           detail.loading
-            ? h('div', { className: 'bv-empty' }, 'Loading issue…')
+            ? h('div', { className: 'bv-empty' }, t('loadingIssue'))
             : detail.error
               ? h('div', { className: 'bv-empty bv-error' }, detail.error)
               : data && data.ok === false
@@ -1201,9 +1368,9 @@ window.__ModuleLoader__.load({
             h(
               'div',
               { className: 'bv-issue-badges' },
-              h(Badge, { tone: statusTone(issue.status) }, issue.status),
-              h(Badge, { tone: issue.priority <= 1 ? 'var(--dsw-alias-state-warn-primary, #d29922)' : undefined }, priorityLabel(issue.priority)),
-              h(Badge, null, issue.type),
+              h(Badge, { kind: 'status', value: issue.status }, issue.status.replace(/_/g, ' ')),
+              h(Badge, { kind: 'priority', value: issue.priority }, priorityLabel(issue.priority)),
+              h(Badge, { kind: 'type', value: issue.type }, issue.type),
               issue.assignee ? h(Badge, null, `@${issue.assignee}`) : null,
               ...issue.labels.map((label) => h(Badge, { key: label }, label)),
             ),
@@ -1213,7 +1380,7 @@ window.__ModuleLoader__.load({
               h('span', null, `created ${relativeTime(issue.createdAt)}`),
               h('span', null, `updated ${relativeTime(issue.updatedAt)}`),
               issue.closedAt ? h('span', null, `closed ${relativeTime(issue.closedAt)}`) : null,
-              h('span', null, `${issue.commentCount} comments`),
+              h('span', null, t('comments', { n: issue.commentCount })),
             ),
             h(
               'div',
@@ -1221,18 +1388,18 @@ window.__ModuleLoader__.load({
               h(
                 'button',
                 { type: 'button', className: 'bv-action', onClick: () => copyId(issue.id) },
-                'Copy id',
+                t('copyId'),
               ),
               h(
                 'button',
                 { type: 'button', className: 'bv-action', onClick: () => insertId(issue.id) },
-                'Insert into composer',
+                t('insertId'),
               ),
             ),
           ),
           issue.description
-            ? h(Markdown, { text: issue.description, ctx: mdCtx })
-            : h('div', { className: 'bv-empty' }, 'No description.'),
+            ? h('div', { className: 'bv-description' }, h(Markdown, { text: issue.description, ctx: mdCtx }))
+            : h('div', { className: 'bv-empty' }, t('noDescription')),
           issue.acceptanceCriteria
             ? h(
                 'section',
@@ -1326,8 +1493,8 @@ window.__ModuleLoader__.load({
                           onClick: () => setShowAllComments((value) => !value),
                         },
                         showAllComments
-                          ? 'Collapse'
-                          : `Show all ${comments.length}`,
+                          ? t('collapse')
+                          : t('showAll', { n: comments.length }),
                       )
                     : null,
                 ),
@@ -1402,7 +1569,7 @@ window.__ModuleLoader__.load({
         h(
           'button',
           { type: 'button', className: 'bv-action', onClick: onRetry },
-          'Retry',
+          t('retry'),
         ),
       )
     }
@@ -1411,109 +1578,201 @@ window.__ModuleLoader__.load({
      * Styles (theme tokens only)
      * ------------------------------------------------------------------ */
 
+    /*
+     * Issue tables are wider than the ~390px pane. `width:max-content` keeps each
+     * column at its natural width and lets `.bv-tablewrap` scroll; `width:100%`
+     * squeezed a `#` column to one character and broke words mid-glyph.
+     */
     const CSS = `
-.bv-root{display:flex;flex-direction:column;height:100%;min-height:0;color:var(--dsw-alias-label-primary);font-size:13px;line-height:1.55;background:transparent}
+.bv-root{
+  /* One local base for the whole panel. Jumps of -1px per step below are computed
+     from the user's own text size, so the sidebar tracks the setting exactly
+     instead of through a clamped derived token. */
+  /* Panel scales from the user's text size. */
+  --bv-font: calc(var(--dsh-content-font-size, 14px) - 1px);
+  --bv-teal: #14b8a6;
+  --bv-line: 1.7;
+  display:flex;flex-direction:column;height:100%;min-height:0;color:var(--dsw-alias-label-primary);font-family:var(--dsh-font-family-text,var(--dsw-font-family,system-ui,-apple-system,sans-serif));font-size:var(--bv-font);line-height:1.55;background:transparent}
 .bv-listview,.bv-detailview{display:flex;flex-direction:column;min-height:0;height:100%}
 .bv-toolbar{display:flex;gap:6px;align-items:center;padding:8px 10px 4px}
-.bv-search{flex:1;min-width:0;height:28px;padding:0 8px;border-radius:6px;border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1);color:inherit;font:inherit;font-size:12px}
+.bv-search{flex:1;min-width:0;min-height:calc(var(--bv-font) * 2);padding:2px 8px;border-radius:6px;border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1);color:inherit;font:inherit;font-size:calc(var(--bv-font) - 1px)}
 .bv-search:focus{outline:none;border-color:var(--dsw-alias-brand-primary)}
-.bv-iconbtn{height:26px;min-width:26px;padding:0 6px;border-radius:6px;border:1px solid transparent;background:transparent;color:var(--dsw-alias-label-secondary);cursor:pointer;font-size:13px;line-height:1}
+.bv-iconbtn{min-height:calc(var(--bv-font) * 2);min-width:calc(var(--bv-font) * 2);padding:2px 6px;border-radius:6px;border:1px solid transparent;background:transparent;color:var(--dsw-alias-label-secondary);cursor:pointer;font-size:var(--bv-font);line-height:1}
 .bv-iconbtn:hover{background:var(--dsw-alias-interactive-bg-hover, rgba(127,127,127,.12));color:var(--dsw-alias-label-primary)}
 .bv-iconbtn-active{border-color:var(--dsw-alias-brand-primary)}
 .bv-chips{display:flex;flex-wrap:wrap;gap:4px;padding:2px 10px 6px}
-.bv-chip{display:inline-flex;align-items:center;gap:4px;height:22px;padding:0 8px;border-radius:999px;border:1px solid var(--dsw-alias-border-l1);background:transparent;color:var(--dsw-alias-label-secondary);font-size:11px;cursor:pointer}
+.bv-chip{display:inline-flex;align-items:center;gap:4px;min-height:calc(var(--bv-font) * 1.7);padding:1px 8px;border-radius:999px;border:1px solid var(--dsw-alias-border-l1);background:transparent;color:var(--dsw-alias-label-secondary);font-size:calc(var(--bv-font) - 2px);cursor:pointer}
 .bv-chip:hover{background:var(--dsw-alias-interactive-bg-hover, rgba(127,127,127,.12))}
 .bv-chip-active{color:var(--dsw-alias-label-primary);border-color:var(--dsw-alias-label-secondary);background:var(--dsw-alias-bg-layer-2)}
 .bv-chip-count{opacity:.6;font-variant-numeric:tabular-nums}
 .bv-subbar{display:flex;align-items:center;gap:8px;padding:0 10px 6px}
-.bv-sort{height:24px;border-radius:6px;border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1);color:inherit;font:inherit;font-size:11px;padding:0 4px}
-.bv-subtle{color:var(--dsw-alias-label-secondary);font-size:11px}
-.bv-mono{font-family:var(--dsw-font-mono, ui-monospace, SFMono-Regular, Menlo, monospace)}
+.bv-sort{min-height:calc(var(--bv-font) * 1.8);border-radius:6px;border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1);color:inherit;font:inherit;font-size:calc(var(--bv-font) - 2px);padding:1px 4px}
+.bv-subtle{color:var(--dsw-alias-label-secondary);font-size:calc(var(--bv-font) - 2px)}
+.bv-mono{font-family:var(--ds-font-family-code, ui-monospace, SFMono-Regular, Menlo, monospace)}
 .bv-list{flex:1;min-height:0;overflow:auto;padding:0 6px 12px}
-.bv-row{padding:7px 8px;border-radius:8px;cursor:pointer;border:1px solid transparent}
-.bv-row:hover{background:var(--dsw-alias-bg-layer-1);border-color:var(--dsw-alias-border-l1)}
+/* Rows are plain until pointed at; the teal wash is a hover signal, not a resting
+   surface. Mixed from one hue against transparent rather than a fixed light value:
+   the theme ships no teal family, and a literal teal-100 (#e6faed) leaves white
+   text at 1.09:1 on the dark surface. Mixing keeps 12-14:1 in both themes. */
+.bv-row{
+  /* Exactly three line boxes: title, badges, labels. The height is 3lh plus the
+     vertical padding, so it follows the text metrics instead of any pixel or
+     font-size multiplier. The label track is reserved even when an issue has none,
+     which is what keeps every row identical; the three tracks split that height
+     evenly so content cannot change it. */
+  --bv-row-pad-y: .45em;
+  line-height:var(--bv-line);
+  height:calc(3 * 1lh + 2 * var(--bv-row-pad-y));
+  box-sizing:border-box;overflow:hidden;
+  display:grid;grid-template-rows:repeat(3, 1fr);align-items:stretch;
+  padding:var(--bv-row-pad-y) .6em;border-radius:8px;cursor:pointer;
+  border:1px solid transparent}
+.bv-row:hover{
+  background:color-mix(in srgb, var(--bv-teal) 14%, transparent);
+  border-color:color-mix(in srgb, var(--bv-teal) 38%, transparent)}
 .bv-row:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:1px}
-.bv-row-top{display:flex;align-items:baseline;gap:6px}
-.bv-row-title{flex:1;min-width:0;font-weight:500;overflow:hidden;text-overflow:ellipsis;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
-.bv-row-meta{display:flex;align-items:center;gap:6px;margin-top:3px;flex-wrap:wrap}
-.bv-row-id{font-size:11px;color:var(--dsw-alias-label-secondary)}
-.bv-ready{font-size:10px;letter-spacing:.03em;color:var(--dsw-alias-state-success-primary);border:1px solid color-mix(in srgb, var(--dsw-alias-state-success-primary) 45%, transparent);border-radius:4px;padding:0 4px;line-height:15px}
-.bv-waiting{font-size:10px;color:var(--dsw-alias-state-warn-primary);opacity:.9}
-.bv-row-labels{display:flex;gap:4px;margin-top:4px;flex-wrap:wrap}
+.bv-row-top{
+  display:grid;grid-template-columns:auto minmax(0,1fr) auto;align-items:center;
+  column-gap:6px;min-width:0;min-height:0}
+.bv-row-title{
+  /* One line, cut at the container edge. A clamped two-line title made every row a
+     different height, so the list could not be scanned down a column. */
+  grid-column:2;min-width:0;font-weight:500;overflow:hidden;text-overflow:ellipsis;
+  white-space:nowrap}
+.bv-row-meta{
+  /* One line, never wrapped: a second line would make this row taller than its
+     neighbours. Whatever does not fit scrolls out of sight rather than reflowing. */
+  display:flex;align-items:center;gap:6px;flex-wrap:nowrap;
+  overflow:hidden;min-height:0}
+.bv-row-id{font-size:calc(var(--bv-font) - 2px);color:var(--dsw-alias-label-secondary);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:0 1 auto}
+/* The badges and the date never break across lines; only the id gives way. */
+.bv-row-meta>.bv-badge,.bv-row-meta>.bv-ready,.bv-row-meta>.bv-waiting{flex:none}
+.bv-ready{font-size:calc(var(--bv-font) - 3px);letter-spacing:.03em;color:var(--dsw-alias-state-success-primary);border:1px solid color-mix(in srgb, var(--dsw-alias-state-success-primary) 45%, transparent);border-radius:4px;padding:0 4px;line-height:1.35}
+.bv-waiting{font-size:calc(var(--bv-font) - 3px);color:var(--dsw-alias-state-warn-primary);opacity:.9}
+.bv-row-labels{display:flex;align-items:center;gap:4px;flex-wrap:nowrap;overflow:hidden;min-height:0}
 .bv-right{margin-left:auto}
-.bv-dot{width:7px;height:7px;border-radius:50%;flex:none;display:inline-block;margin-top:4px}
-.bv-badge{display:inline-flex;align-items:center;height:18px;padding:0 6px;border-radius:5px;border:1px solid var(--dsw-alias-border-l1);font-size:10.5px;color:var(--dsw-alias-label-secondary);white-space:nowrap}
-.bv-label{font-size:10.5px;padding:0 5px;border-radius:4px;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-secondary)}
-.bv-more{margin:8px auto;display:block;padding:5px 12px;border-radius:6px;border:1px solid var(--dsw-alias-border-l1);background:transparent;color:var(--dsw-alias-label-secondary);cursor:pointer;font:inherit;font-size:11.5px}
-.bv-empty{padding:24px 16px;color:var(--dsw-alias-label-secondary);font-size:12px;text-align:center}
+.bv-row-age{grid-column:3;font-size:calc(var(--bv-font) - 2.5px);padding-left:8px}
+.bv-titleicon{display:inline-flex;align-items:center;flex:none;margin-right:5px;vertical-align:-2px}\n.bv-dot{width:.55em;height:.55em;border-radius:50%;flex:none;display:inline-block;margin-top:.3em}
+.bv-badge{display:inline-flex;align-items:center;min-height:calc(var(--bv-font) * 1.35);padding:1px 6px;border-radius:5px;border:1px solid var(--dsw-alias-border-l1);font-size:calc(var(--bv-font) - 2.5px);color:var(--dsw-alias-label-secondary);white-space:nowrap}
+.bv-badge-solid{border-color:transparent;font-weight:600;letter-spacing:.01em}
+/* Shape repeats what the hue says, because three dimensions share one row and
+   only a handful of hue families exist: a pill is a status, a sharp-cornered
+   block is a priority, a soft square is a type. */
+.bv-badge-status{border-radius:999px;text-transform:lowercase}
+.bv-badge-priority{border-radius:3px;font-family:var(--ds-font-family-code, ui-monospace, Menlo, monospace)}
+.bv-badge-type{border-radius:5px;font-weight:500}
+.bv-label{font-size:calc(var(--bv-font) - 2.5px);padding:0 5px;border-radius:4px;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-secondary)}
+.bv-more{margin:8px auto;display:block;padding:5px 12px;border-radius:6px;border:1px solid var(--dsw-alias-border-l1);background:transparent;color:var(--dsw-alias-label-secondary);cursor:pointer;font:inherit;font-size:calc(var(--bv-font) - 1.5px)}
+.bv-empty{padding:24px 16px;color:var(--dsw-alias-label-secondary);font-size:calc(var(--bv-font) - 1px);text-align:center}
 .bv-error{color:var(--dsw-alias-state-error-primary)}
 .bv-detailbar{display:flex;align-items:center;gap:6px;padding:6px 8px;border-bottom:1px solid var(--dsw-alias-border-l1);position:sticky;top:0;background:var(--dsw-alias-bg-base);z-index:2}
-.bv-detailid{font-size:11.5px;color:var(--dsw-alias-label-secondary)}
+.bv-detailid{font-size:calc(var(--bv-font) - 1.5px);color:var(--dsw-alias-label-secondary);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .bv-spacer{flex:1}
 .bv-issue{flex:1;min-height:0;overflow:auto;padding:10px 12px 24px}
 .bv-issue-head{padding-bottom:8px;border-bottom:1px solid var(--dsw-alias-border-l1);margin-bottom:10px}
-.bv-issue-title{margin:0 0 6px;font-size:15px;line-height:1.4;font-weight:600}
+.bv-issue-title{margin:0 0 6px;font-size:calc(var(--bv-font) + 2px);line-height:1.4;font-weight:600}
 .bv-issue-badges{display:flex;flex-wrap:wrap;gap:4px;margin-bottom:6px}
-.bv-issue-meta{display:flex;flex-wrap:wrap;gap:10px;color:var(--dsw-alias-label-secondary);font-size:11px}
+.bv-issue-meta{display:flex;flex-wrap:wrap;gap:10px;color:var(--dsw-alias-label-secondary);font-size:calc(var(--bv-font) - 2px)}
 .bv-issue-actions{display:flex;gap:6px;margin-top:8px}
-.bv-action{height:24px;padding:0 9px;border-radius:6px;border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);font:inherit;font-size:11.5px;cursor:pointer}
+.bv-action{min-height:calc(var(--bv-font) * 1.8);padding:1px 9px;border-radius:6px;border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);font:inherit;font-size:calc(var(--bv-font) - 1.5px);cursor:pointer}
 .bv-action:hover{border-color:var(--dsw-alias-brand-primary);color:var(--dsw-alias-brand-primary)}
-.bv-md{overflow-wrap:anywhere}
+.bv-md{overflow-wrap:break-word}
+.bv-description{
+  /* The description gets breathing room of its own. Applied here rather than on
+     .bv-md, because sections render their own .bv-md inside padding they already
+     have and would end up with a double inset. */
+  padding:12px 14px;border-radius:8px}
 .bv-md>*:first-child{margin-top:0}
 .bv-p{margin:0 0 9px}
 .bv-h{margin:16px 0 7px;line-height:1.35;font-weight:600}
-.bv-h1{font-size:15px;padding-bottom:4px;border-bottom:1px solid var(--dsw-alias-border-l1)}
-.bv-h2{font-size:14px}
-.bv-h3{font-size:13px}
-.bv-h4,.bv-h5,.bv-h6{font-size:12.5px;color:var(--dsw-alias-label-secondary)}
-.bv-mlist{margin:0 0 9px;padding-left:18px}
-.bv-mlist-nested{margin:3px 0 0;padding-left:16px}
+.bv-h1{font-size:calc(var(--bv-font) + 2px);padding-bottom:4px;border-bottom:1px solid var(--dsw-alias-border-l1)}
+.bv-h2{font-size:calc(var(--bv-font) + 1px)}
+.bv-h3{font-size:var(--bv-font)}
+.bv-h4,.bv-h5,.bv-h6{font-size:calc(var(--bv-font) + 0.5px);color:var(--dsw-alias-label-secondary)}
+.bv-mlist{
+  /* A native marker is placed just outside the content box at whatever width the
+     glyph needs, so a wide marker like "10." reaches further left than a bullet and
+     the list looks less indented. The gutter below is a fixed-width box instead, so
+     numbers and bullets start at the same x. */
+  list-style:none;margin:0 0 9px;padding-left:1.9em}
+/* A number is wider than a bullet, so at an equal gutter its ink sits further left
+   and the list reads as LESS indented. The ordered list therefore gets a wider
+   gutter: the number's ink starts on the same line as a bullet's, and the numbered
+   text lands further right. */
+.bv-mli{position:relative}
+.bv-mli::before{
+  position:absolute;left:-1.9em;width:1.9em;box-sizing:border-box;
+  text-align:right;padding-right:.28em;
+  color:var(--dsw-alias-label-secondary);content:""}
+
+ul.bv-mlist>.bv-mli::before{content:"•"}
+ol.bv-mlist{counter-reset:bv-li;padding-left:2.35em}
+ol.bv-mlist>.bv-mli{counter-increment:bv-li}
+ol.bv-mlist>.bv-mli::before{left:-2.35em;width:2.35em;content:counter(bv-li) "."}
+.bv-mlist-nested{margin:3px 0 0;padding-left:1.7em}
+.bv-mlist-nested>.bv-mli::before{left:-1.7em;width:1.7em}
 .bv-mli{margin:2px 0}
 .bv-mli-task{list-style:none;margin-left:-16px;display:flex;gap:6px;align-items:flex-start}
 .bv-check{margin-top:4px;flex:none}
-.bv-code{font-family:var(--dsw-font-mono, ui-monospace, Menlo, monospace);font-size:11.5px;padding:1px 4px;border-radius:4px;background:var(--dsw-alias-bg-layer-2);border:1px solid var(--dsw-alias-border-l1)}
+.bv-code{font-family:var(--ds-font-family-code, ui-monospace, Menlo, monospace);font-size:var(--dsh-code-font-size,11px);padding:1px 4px;border-radius:4px;background:var(--dsw-alias-bg-layer-2);border:1px solid var(--dsw-alias-border-l1);overflow-wrap:anywhere}
 .bv-code-link{cursor:pointer;color:var(--dsw-alias-brand-primary);border-color:color-mix(in srgb, var(--dsw-alias-brand-primary) 40%, transparent)}
 .bv-code-link:hover{text-decoration:underline}
-.bv-pre{position:relative;margin:0 0 10px;padding:9px 10px;border-radius:8px;background:var(--dsw-alias-bg-layer-2);border:1px solid var(--dsw-alias-border-l1);overflow:auto;font-size:11.5px;line-height:1.5}
-.bv-pre code{font-family:var(--dsw-font-mono, ui-monospace, Menlo, monospace);white-space:pre}
-.bv-lang{position:absolute;top:5px;right:8px;font-size:9.5px;letter-spacing:.04em;color:var(--dsw-alias-label-secondary);opacity:.7;text-transform:uppercase}
+.bv-pre{position:relative;margin:0 0 10px;padding:9px 10px;border-radius:8px;background:var(--dsw-alias-bg-layer-2);border:1px solid var(--dsw-alias-border-l1);overflow:auto;font-size:var(--dsh-code-font-size,11px);line-height:1.5}
+.bv-pre code{font-family:var(--ds-font-family-code, ui-monospace, Menlo, monospace);white-space:pre}
+.bv-lang{position:absolute;top:5px;right:8px;font-size:calc(var(--bv-font) - 3.5px);letter-spacing:.04em;color:var(--dsw-alias-label-secondary);opacity:.7;text-transform:uppercase}
 .bv-hr{border:none;border-top:1px solid var(--dsw-alias-border-l1);margin:12px 0}
 .bv-quote{margin:0 0 10px;padding:2px 0 2px 10px;border-left:3px solid var(--dsw-alias-border-l2);color:var(--dsw-alias-label-secondary)}
-.bv-tablewrap{overflow:auto;margin:0 0 10px;border:1px solid var(--dsw-alias-border-l1);border-radius:8px}
-.bv-table{border-collapse:collapse;width:100%;font-size:11.5px}
-.bv-table th,.bv-table td{padding:5px 8px;border-bottom:1px solid var(--dsw-alias-border-l1);text-align:left;vertical-align:top}
+.bv-tablewrap{overflow-x:auto;margin:0 0 10px;border:1px solid var(--dsw-alias-border-l1);border-radius:8px}
+.bv-table{border-collapse:collapse;width:max-content;min-width:100%;font-size:calc(var(--bv-font) - 1.5px)}
+.bv-table th,.bv-table td{padding:5px 8px;border-bottom:1px solid var(--dsw-alias-border-l1);text-align:left;vertical-align:top;overflow-wrap:normal;word-break:normal}
 .bv-table th{background:var(--dsw-alias-bg-layer-1);font-weight:600;white-space:nowrap}
+.bv-table td:first-child{white-space:nowrap}
 .bv-table tr:last-child td{border-bottom:none}
 .bv-link{color:var(--dsw-alias-brand-primary);text-decoration:none}
 .bv-link:hover{text-decoration:underline}
-.bv-filelink{display:inline;padding:0 3px;margin:0 1px;border-radius:4px;border:1px dashed var(--dsw-alias-border-l2);background:transparent;color:var(--dsw-alias-label-primary);font-family:var(--dsw-font-mono, ui-monospace, Menlo, monospace);font-size:11.5px;cursor:pointer}
+.bv-filelink{display:inline;padding:0 3px;margin:0 1px;border-radius:4px;border:1px dashed var(--dsw-alias-border-l2);background:transparent;color:var(--dsw-alias-label-primary);font-family:var(--ds-font-family-code, ui-monospace, Menlo, monospace);font-size:calc(var(--bv-font) - 1.5px);cursor:pointer}
 .bv-filelink:hover{border-color:var(--dsw-alias-brand-primary);color:var(--dsw-alias-brand-primary)}
 .bv-fileline{opacity:.6}
-.bv-issuelink{padding:0 4px;border-radius:4px;border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-brand-primary);font-family:var(--dsw-font-mono, ui-monospace, Menlo, monospace);font-size:11px;cursor:pointer}
+.bv-issuelink{padding:0 4px;border-radius:4px;border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-brand-primary);font-family:var(--ds-font-family-code, ui-monospace, Menlo, monospace);font-size:calc(var(--bv-font) - 2px);cursor:pointer}
 .bv-issuelink:hover{border-color:var(--dsw-alias-brand-primary)}
-.bv-section{margin-top:16px;padding-top:10px;border-top:1px solid var(--dsw-alias-border-l1)}
+.bv-section{
+  /* Secondary content — design, notes, acceptance criteria, close reason — gets a
+     faint wash so the description stays the thing you read first. Mixed from the
+     panel accent against transparent rather than a literal gray-50: that value is
+     theme-invariant and leaves light text at 1.0:1 on the dark surface. */
+  margin-top:12px;padding:9px 11px;border-radius:8px;
+  background:color-mix(in srgb, var(--bv-teal) 4%, transparent);
+  border:1px solid color-mix(in srgb, var(--bv-teal) 14%, transparent)}
 .bv-section-head{display:flex;align-items:baseline;justify-content:space-between;gap:8px;margin-bottom:8px}
-.bv-section-head .bv-section-title{margin:0}
-.bv-linkbtn{border:none;background:transparent;padding:0;color:var(--dsw-alias-brand-primary);font:inherit;font-size:11px;cursor:pointer}
+.bv-section-head .bv-section-title{
+  margin:0;font-size:calc(var(--bv-font) - 2px);font-weight:600;
+  letter-spacing:.02em;text-transform:uppercase;
+  color:var(--dsw-alias-label-secondary)}
+.bv-linkbtn{border:none;background:transparent;padding:0;color:var(--dsw-alias-brand-primary);font:inherit;font-size:calc(var(--bv-font) - 2px);cursor:pointer}
 .bv-linkbtn:hover{text-decoration:underline}
 .bv-comments-hidden{text-align:center;padding:2px 0 4px}
-.bv-section-title{margin:0 0 8px;font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--dsw-alias-label-secondary);font-weight:600}
+.bv-section-title{margin:0 0 8px;font-size:calc(var(--bv-font) - 2px);letter-spacing:.06em;text-transform:uppercase;color:var(--dsw-alias-label-secondary);font-weight:600}
 .bv-relations{display:flex;flex-direction:column;gap:3px}
 .bv-relation{display:flex;align-items:center;gap:7px;width:100%;padding:4px 6px;border-radius:6px;border:1px solid transparent;background:transparent;color:inherit;font:inherit;text-align:left;cursor:default}
 .bv-relation-link{cursor:pointer}
 .bv-relation-link:hover{background:var(--dsw-alias-bg-layer-1);border-color:var(--dsw-alias-border-l1)}
-.bv-relation-id{font-size:11px;color:var(--dsw-alias-label-secondary);flex:none}
-.bv-relation-title{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px}
+.bv-relation-id{font-size:calc(var(--bv-font) - 2px);color:var(--dsw-alias-label-secondary);flex:none}
+.bv-relation-title{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:calc(var(--bv-font) - 1px)}
 .bv-comments{display:flex;flex-direction:column;gap:8px}
-.bv-comment{border:1px solid var(--dsw-alias-border-l1);border-radius:8px;padding:8px 10px;background:var(--dsw-alias-bg-layer-1)}
+.bv-comment{
+  /* Transparent, because the comments section already carries the wash: tinting
+     both stacked two 4% layers into 8% and the thread looked heavier than the
+     description it is supposed to sit behind. The border alone separates entries. */
+  border:1px solid var(--dsw-alias-border-l1);
+  border-radius:8px;padding:8px 10px;background:transparent}
 .bv-comment-head{display:flex;justify-content:space-between;gap:8px;margin-bottom:6px}
-.bv-comment-author{font-size:11.5px;font-weight:600}
+.bv-comment-author{font-size:calc(var(--bv-font) - 1.5px);font-weight:600}
 .bv-failure{margin:16px 12px;padding:12px;border-radius:8px;border:1px solid var(--dsw-alias-state-warn-primary);background:var(--dsw-alias-bg-layer-1)}
 .bv-failure-title{font-weight:600;margin-bottom:4px}
-.bv-failure-hint{color:var(--dsw-alias-label-secondary);font-size:12px;margin-bottom:6px}
-.bv-failure-cwd{font-size:10.5px;margin-bottom:6px;word-break:break-all}
-.bv-failure-detail{margin:0 0 8px;padding:8px;border-radius:6px;background:var(--dsw-alias-bg-layer-2);font-size:11px;white-space:pre-wrap;max-height:220px;overflow:auto}
-.bv-toast{position:sticky;bottom:8px;margin:8px auto 0;width:max-content;padding:5px 12px;border-radius:999px;background:var(--dsw-alias-bg-overlay);border:1px solid var(--dsw-alias-border-l2);font-size:11.5px;box-shadow:0 2px 8px color-mix(in srgb, var(--dsw-alias-label-primary) 12%, transparent)}
+.bv-failure-hint{color:var(--dsw-alias-label-secondary);font-size:calc(var(--bv-font) - 1px);margin-bottom:6px}
+.bv-failure-cwd{font-size:calc(var(--bv-font) - 2.5px);margin-bottom:6px;word-break:break-all}
+.bv-failure-detail{margin:0 0 8px;padding:8px;border-radius:6px;background:var(--dsw-alias-bg-layer-2);font-size:calc(var(--bv-font) - 2px);white-space:pre-wrap;max-height:220px;overflow:auto}
+.bv-toast{position:sticky;bottom:8px;margin:8px auto 0;width:max-content;padding:5px 12px;border-radius:999px;background:var(--dsw-alias-bg-overlay);border:1px solid var(--dsw-alias-border-l2);font-size:calc(var(--bv-font) - 1.5px);box-shadow:0 2px 8px color-mix(in srgb, var(--dsw-alias-label-primary) 12%, transparent)}
 `
 
     function StyleSheet() {
@@ -1523,6 +1782,26 @@ window.__ModuleLoader__.load({
     /* ------------------------------------------------------------------ *
      * Guide glyph
      * ------------------------------------------------------------------ */
+
+    /**
+     * The tab chip's own title.
+     *
+     * The sidebar renders a chip from the tab record unless the type contributes a
+     * component at `sidebar.right.pane.tab.title`. Without one the chip shows text
+     * only — which is why the start-list entry (that uses `guide[].icon`) had a
+     * glyph while the open tab did not. Same key as the body, so both follow one
+     * record.
+     */
+    function BeadsTitle(props) {
+      const info = typeof props?.useTabInfo === 'function' ? props.useTabInfo() : undefined
+      const title = info?.tab?.title ?? t('tab')
+      return h(
+        React.Fragment,
+        null,
+        h('span', { className: 'bv-titleicon' }, h(BeadsGlyph, { size: 14 })),
+        title,
+      )
+    }
 
     function BeadsGlyph({ size = 16 }) {
       return h(
@@ -1545,13 +1824,123 @@ window.__ModuleLoader__.load({
      * Dictionaries
      * ------------------------------------------------------------------ */
 
+    /*
+     * Copy lives here rather than inline so the panel can follow the Host's
+     * Language setting. Placeholders use the same `{name}` form the Host's own
+     * dictionaries use, so `locale.bind` substitution works unchanged.
+     */
     const ZH = {
       tab: 'Beads',
       guideDesc: '浏览本项目的 Beads 议题：筛选、阅读 Markdown、点开文件、复制或插入 issue id',
+      search: '搜索议题…  ( / )',
+      refresh: '刷新',
+      filterReady: '可开工',
+      filterWaiting: '等待中',
+      filterActive: '进行中',
+      filterAll: '全部',
+      statusOpen: '待办',
+      statusInProgress: '处理中',
+      statusBlocked: '受阻',
+      statusClosed: '已完成',
+      statusDeferred: '搁置',
+      statusPinned: '已固定',
+      statusHooked: '挂接',
+      sortLabel: '排序',
+      sortUpdated: '按更新',
+      sortPriority: '按优先级',
+      sortCreated: '按创建',
+      sortId: '按编号',
+      shown: '共 {n} 条',
+      loadingList: '正在读取 Beads 议题…',
+      loadingIssue: '正在读取议题…',
+      copyId: '复制 ID',
+      insertId: '插入输入框',
+      noDescription: '没有描述。',
+      collapse: '收起',
+      showAll: '展开全部 {n} 条',
+      earlierHidden: '更早的 {n} 条评论已折叠',
+      retry: '重试',
+      back: '返回列表（Esc）',
+      copyIssueId: '复制 issue id',
+      insertIssueId: '把 issue id 插入输入框',
+      comments: '{n} 条评论',
+      created: '创建',
+      updated: '更新',
+      priority: '优先级',
+      acceptance: '验收标准',
+      notes: '备注',
+      design: '设计',
+      closeReason: '关闭原因',
+      ready: '可开工',
+      waitingOn: '等待 {n} 项',
     }
     const EN = {
       tab: 'Beads',
-      guideDesc: 'Browse this project’s Beads issues — filter, read the rendered Markdown, open referenced files, copy or insert ids',
+      guideDesc: 'Browse this project\u2019s Beads issues \u2014 filter, read the rendered Markdown, open referenced files, copy or insert ids',
+      search: 'Search issues\u2026  ( / )',
+      refresh: 'Refresh',
+      filterReady: 'Ready',
+      filterWaiting: 'Waiting',
+      filterActive: 'Active',
+      filterAll: 'All',
+      statusOpen: 'Open',
+      statusInProgress: 'In progress',
+      statusBlocked: 'Blocked',
+      statusClosed: 'Closed',
+      statusDeferred: 'Deferred',
+      statusPinned: 'Pinned',
+      statusHooked: 'Hooked',
+      sortLabel: 'Sort',
+      sortUpdated: 'Updated',
+      sortPriority: 'Priority',
+      sortCreated: 'Created',
+      sortId: 'ID',
+      shown: '{n} shown',
+      loadingList: 'Loading Beads issues\u2026',
+      loadingIssue: 'Loading issue\u2026',
+      copyId: 'Copy id',
+      insertId: 'Insert into composer',
+      noDescription: 'No description.',
+      collapse: 'Collapse',
+      showAll: 'Show all {n}',
+      earlierHidden: '{n} earlier comments hidden',
+      retry: 'Retry',
+      back: 'Back to the list (Esc)',
+      copyIssueId: 'Copy issue id',
+      insertIssueId: 'Insert issue id into the composer',
+      comments: '{n} comments',
+      created: 'Created',
+      updated: 'Updated',
+      priority: 'Priority',
+      acceptance: 'Acceptance criteria',
+      notes: 'Notes',
+      design: 'Design',
+      closeReason: 'Close reason',
+      ready: 'ready',
+      waitingOn: 'waiting on {n}',
+    }
+
+    /**
+     * Dictionary the panel is currently drawing from. The Host drives the swap: it
+     * re-renders slot occupants on a locale change, and this value is refreshed by
+     * the subscription set up in `apply`, so the next render reads the new words.
+     */
+    let dictionary = EN
+
+    /**
+     * The Host locale service, once `apply` has seen it. The panel subscribes
+     * through this so its copy refreshes even if a change lands while this
+     * particular slot is not being re-rendered.
+     */
+    let localeService = null
+
+    /** One copy string with `{name}` placeholders filled in. */
+    function t(key, params) {
+      const template = dictionary[key] ?? EN[key] ?? key
+      if (params === undefined) return template
+      return template.replace(/\{(\w+)\}/g, (whole, name) =>
+        params[name] === undefined ? whole : String(params[name]),
+      )
     }
 
     /* ------------------------------------------------------------------ *
@@ -1574,8 +1963,30 @@ window.__ModuleLoader__.load({
       let translate = (key) => EN[key] ?? key
       const locale = ctx.get ? ctx.get('locale') : undefined
       if (locale !== undefined) {
+        localeService = locale
         ctx.effect(() => locale.register(NS, { zh: ZH, en: EN }), 'beads-viewer: dictionaries')
         translate = locale.bind(NS)
+        // The Host re-renders slot occupants on a locale change, but the render
+        // reads the module dictionary, so it has to be swapped before that render
+        // happens. Reading the snapshot once also covers a language chosen before
+        // this plugin loaded.
+        if (typeof locale.subscribe === 'function') {
+          // The Host notifies subscribers with no argument (`fn()`), so the
+          // snapshot has to be read back from the service. Destructuring the
+          // callback parameter instead throws inside the Host's notify loop,
+          // which is caught and logged as "locale subscriber crashed" — the
+          // dictionary then never changes and the language switch looks dead.
+          const readLanguage = () =>
+            typeof locale.getSnapshot === 'function' ? locale.getSnapshot()?.active : undefined
+          ctx.effect(
+            () =>
+              locale.subscribe(() => {
+                dictionary = readLanguage() === 'zh' ? ZH : EN
+              }),
+            'beads-viewer: active dictionary',
+          )
+          dictionary = readLanguage() === 'zh' ? ZH : EN
+        }
       }
 
       const wire = (scope) => {
@@ -1607,9 +2018,17 @@ window.__ModuleLoader__.load({
         scope.effect(
           () =>
             ctx.slots.inject('sidebar.right.pane.tab', () =>
-              ctx.slots.register({ name: 'sidebar.right.pane.tab', key: TAB_ID }, BeadsPanel),
+              ctx.slots.register({ name: 'sidebar.right.pane.tab', key: TAB_ID, locale: NS }, BeadsPanel),
             ),
           'beads-viewer: panel body',
+        )
+        // The chip needs its own seat; the body registration does not cover it.
+        scope.effect(
+          () =>
+            ctx.slots.inject('sidebar.right.pane.tab.title', () =>
+              ctx.slots.register({ name: 'sidebar.right.pane.tab.title', key: TAB_ID }, BeadsTitle),
+            ),
+          'beads-viewer: tab chip title',
         )
       }
 
@@ -1625,6 +2044,23 @@ window.__ModuleLoader__.load({
       apply,
       /** Test seam: pure helpers exercised by `npm test` in Node. */
       __test: {
+        BeadsTitle,
+        // Copy and the active-dictionary switch, so the suites can prove a
+        // language change reaches the rendered strings.
+        t,
+        setLanguage(language) {
+          dictionary = language === 'zh' ? ZH : EN
+        },
+        /** Install (or clear) the locale service the panel subscribes to. */
+        setLocaleService(service) {
+          localeService = service
+        },
+        /** The service `apply` published for the panel's own subscription. */
+        getLocaleService() {
+          return localeService
+        },
+        ZH,
+        EN,
         parseBlocks,
         extractPaths,
         splitPathToken,
@@ -1637,6 +2073,11 @@ window.__ModuleLoader__.load({
         BeadsPanel,
         statusTone,
         priorityLabel,
+        Badge,
+        badgeFor,
+        PRIORITY_BADGE,
+        TYPE_BADGE,
+        STATUS_BADGE,
       },
     }
   },

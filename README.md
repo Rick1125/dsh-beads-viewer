@@ -12,6 +12,30 @@ the conversation already are.
 - **A tab in the right sidebar.** It registers a `beads` tab type, so it appears in
   the sidebar's new-tab guide next to Files and the rest, and can be docked, split or
   floated like any other page.
+- **Colour-coded badges.** Every row carries three filled badges — status, priority
+  and type — so a list can be triaged without reading it. Hue carries the value
+  (red is urgent or broken, amber is a warning, blue is normal work, green is a
+  task, grey is inert) and shape carries the dimension (a pill is a status, a
+  sharp monospace block is a priority, a soft square is a type).
+- **Uniform row pitch.** A row is exactly three line boxes tall — title, badges,
+  labels — expressed as `calc(3 * 1lh + padding)` so it follows the text metrics
+  rather than a pixel value. A long title truncates with an ellipsis at the container
+  edge instead of wrapping, and the label track is reserved even when an issue has no
+  labels, so every row is the same height.
+- **Secondary blocks are visually quieter.** Design, notes, acceptance criteria,
+  close reason and the comments section take a faint accent wash, so the description
+  stays the content you read first. The wash is mixed from the accent against
+  `transparent` rather than a literal pale grey, which would be invisible on the dark
+  surface. The description itself is never washed.
+- **Hover marks the target row.** A resting row is plain; the row under the pointer
+  takes a teal wash and border. The wash is mixed from one hue against
+  `transparent`, so it reads correctly on both the light and the dark surface
+  instead of needing a second literal.
+- **Two rules the palette must satisfy, enforced by tests.** Every fill is checked
+  against every other fill that shares a row (ΔE ≥ 25 in Lab, so no two badges
+  read as the same colour) and label ink is *derived*, not chosen: a fill lighter
+  than WCAG's luminance crossover takes black text, a darker one takes white. A
+  fill that clashes or a hand-picked ink fails the suite.
 - **The list.** A *Ready* chip (what you can start right now, from `bd ready`) and a
   *Blocked* chip beside the status chips, then active / open / in progress / closed /
   all, each with live counts, a search box (`/` focuses it), and sorting by update,
@@ -32,21 +56,27 @@ the conversation already are.
 ## Install
 
 ```bash
+# from the registry
+dsh plugin --profile <name> add dsh-beads-viewer
+
+# or from a checkout, which links the profile entry to this directory
 dsh plugin --profile <name> add /path/to/dsh-beads-viewer
 ```
 
 Then restart the Harness so the new bundle's client half loads. The tab appears in
 the right sidebar's new-tab guide.
 
-The plugin is a *linked* profile package: edits to this directory are picked up on
-the next load, with no reinstall.
+A **linked** install picks up edits on the next load with no reinstall; a registry
+install is a normal package, so upgrading means running `add` again with the new
+version.
 
 ## Requirements
 
 - The `bd` CLI on the machine running the Harness. The Host finds it on `PATH`, then
   at the usual Homebrew and Go install locations. `brew install beads` is enough.
-- A project with a Beads workspace (a `.beads` directory). The panel walks up from
-  the session's folder to find it, so opening a subdirectory still works.
+- A project with a Beads workspace. The panel asks `bd where` which workspace it
+  would open, so a subdirectory, a git worktree and a `BEADS_DIR` override all
+  resolve the way `bd` itself would.
 
 If either is missing the panel says which one, in the panel itself, with the reason
 `bd` gave.
@@ -95,7 +125,7 @@ test/               Host, client-helper, activation and render checks
 npm test
 ```
 
-70 checks in five suites:
+103 checks in five suites:
 
 | File | Covers |
 | --- | --- |
@@ -116,6 +146,41 @@ rule, so the Host asks `bd` directly and reports `readiness: 'live'` with a flag
 issue. When that command fails the payload says `'unavailable'` and the panel offers
 no readiness chip at all — an empty set means "nothing is startable", which is a
 different and actionable statement from "the question could not be asked".
+
+## What it looks like
+
+Screenshots of the shipped component tree, rendered against the theme tokens
+extracted from the host.
+
+**List** — uniform three-line rows, tinted only under the pointer, badges in three
+shapes so a row can be triaged without reading it:
+
+| Light | Dark |
+| --- | --- |
+| ![list, light](docs/list-hover-light.png) | ![list, dark](docs/list-hover-dark.png) |
+
+**Issue detail** — description first, secondary blocks (design, notes, acceptance
+criteria, comments) on a faint wash:
+
+| Light | Dark |
+| --- | --- |
+| ![detail, light](docs/detail-sections-light.png) | ![detail, dark](docs/detail-sections-dark.png) |
+
+**Badge palette** — the full set, checked for contrast in both themes:
+
+| Light | Dark |
+| --- | --- |
+| ![badges, light](docs/badges-light.png) | ![badges, dark](docs/badges-dark.png) |
+
+Chinese interface, via the Host's own language setting:
+
+![panel in Chinese](docs/lang-zh.png)
+
+Details that took more than one attempt, kept as evidence:
+
+- `docs/list-fixed-rows.png` — rows are one height at every text size.
+- `docs/detail-list-indent.png` — an ordered list's marker and text against a
+  bulleted one; the number is wider, so its gutter is wider too.
 
 ## Known limits
 

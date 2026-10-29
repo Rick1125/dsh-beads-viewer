@@ -67,13 +67,27 @@ function makeContext({ withTabs = true } = {}) {
     },
   }
 
+  // Mirrors the Host's real contract: `subscribe(listener)` is notified with NO
+  // argument, and the current language is read back through `getSnapshot()`.
+  let activeLanguage = 'en'
+  const localeListeners = new Set()
   const locale = {
     register(ns, dicts) {
       record.locales.push({ ns, dicts })
       return () => {}
     },
     bind: (ns) => (key) => `${ns}:${key}`,
+    subscribe(listener) {
+      localeListeners.add(listener)
+      return () => localeListeners.delete(listener)
+    },
+    getSnapshot: () => ({ active: activeLanguage, locales: [], revision: 0 }),
   }
+  record.switchLanguage = (language) => {
+    activeLanguage = language
+    for (const listener of [...localeListeners]) listener()
+  }
+  record.localeSubscribers = localeListeners
 
   const services = new Map([['slots', slots], ['locale', locale]])
   if (withTabs) services.set('sidebarRightTabs', tabs)
@@ -127,13 +141,29 @@ test('apply registers the tab type, its guide entry and the panel body', () => {
   assert.match(type.guide[0].description(), /beadsViewer:guideDesc/)
   assert.equal(typeof type.guide[0].icon, 'function')
 
-  assert.deepEqual(record.slotsInjected, ['sidebar.right.pane.tab'])
-  assert.equal(record.slotRegistrations.length, 1)
-  assert.deepEqual(record.slotRegistrations[0].options, {
+  // Two seats: the body, and the chip title. The chip is a separate registration —
+  // without it the tab shows text only while the start-list entry shows a glyph.
+  assert.deepEqual(record.slotsInjected, ['sidebar.right.pane.tab', 'sidebar.right.pane.tab.title'])
+  assert.equal(record.slotRegistrations.length, 2)
+
+  const body = record.slotRegistrations.find((entry) => entry.options.name === 'sidebar.right.pane.tab')
+  const title = record.slotRegistrations.find((entry) => entry.options.name === 'sidebar.right.pane.tab.title')
+  assert.ok(body !== undefined, 'the panel body must be registered')
+  assert.ok(title !== undefined, 'the chip title must be registered')
+
+  assert.deepEqual(body.options, {
     name: 'sidebar.right.pane.tab',
     key: 'dsh-beads-viewer',
+    // Declaring the namespace is what makes the Host hand the component a bound
+    // `t` and re-render it when the Language setting changes.
+    locale: 'beadsViewer',
   })
-  assert.equal(typeof record.slotRegistrations[0].component, 'function')
+  // Both seats must use the same key, or the chip describes a different record
+  // than the body it sits above.
+  assert.deepEqual(title.options, { name: 'sidebar.right.pane.tab.title', key: body.options.key })
+
+  assert.equal(typeof body.component, 'function')
+  assert.equal(typeof title.component, 'function')
 })
 
 test('apply registers both dictionaries under one namespace', () => {
@@ -179,6 +209,37 @@ test('the guide glyph renders an svg with the requested size', () => {
 })
 
 let failed = 0
+test('a Host language change through the real apply wiring updates the copy', async () => {
+  // The panel-level test injects the service directly; this drives the production
+  // path instead, so a misplaced assignment in `apply` cannot hide behind it.
+  mod.__test.setLanguage('en')
+  const { ctx, record } = makeContext()
+  mod.apply(ctx)
+  assert.equal(record.localeSubscribers.size, 1, 'apply must subscribe to language changes')
+  // The panel keeps its own subscription through this handle, so apply has to
+  // publish it; without it the panel-level fallback silently never engages.
+  assert.notEqual(mod.__test.getLocaleService(), null, 'apply must publish the locale service to the panel')
+  assert.equal(mod.__test.t('search'), 'Search issues…  ( / )')
+
+  record.switchLanguage('zh')
+  assert.equal(mod.__test.t('search'), '搜索议题…  ( / )')
+
+  record.switchLanguage('en')
+  assert.equal(mod.__test.t('search'), 'Search issues…  ( / )')
+})
+
+test('the language subscriber survives being called with no snapshot', async () => {
+  // The Host calls listeners as `fn()`; a callback that destructures its argument
+  // throws inside the Host's notify loop and the dictionary silently never
+  // changes. This asserts the callback itself does not throw.
+  mod.__test.setLanguage('en')
+  const { ctx, record } = makeContext()
+  mod.apply(ctx)
+  for (const listener of record.localeSubscribers) {
+    assert.doesNotThrow(() => listener(), 'the subscriber must not require an argument')
+  }
+})
+
 for (const { name, fn } of results) {
   try {
     fn()
