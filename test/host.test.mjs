@@ -553,6 +553,44 @@ results.push({
       )
     })
     assert.equal(again.version, payload.version, 'polling must not disturb the fingerprint')
+
+    // While one of our own `bd` reads is in flight, the fingerprint is mid-write:
+    // the route must say so, because a sample taken now is neither the old state
+    // nor the new one. This is the race that made an open detail view refresh a
+    // few times at random — the poll sampled the store while the detail read was
+    // still touching it.
+    let release
+    const gate = new Promise((done) => { release = done })
+    const blocking = { resolveBd: async () => { await gate; return '/bin/bd' } }
+    const seen2 = []
+    const ctx2 = {
+      get: (key) => (key === 'webServer' ? { register: (route) => seen2.push(route) } : undefined),
+      inject: (names, callback) => callback({ get: (key) => (key === 'webServer' ? { register: (route) => seen2.push(route) } : undefined), effect: (fn) => fn() }),
+      effect: (fn) => fn(),
+    }
+    // Gate on the real bd binary so the gated read completes once released.
+    apply(ctx2, { handlerDeps: { resolveBd: async () => { await gate; return 'bd' } } })
+    const blockingHandler = seen2[0].handler
+    const cwd2 = join(dir, 'proj2')
+    await mkdir(join(cwd2, '.beads', 'embeddeddolt', 'proj', '.dolt', 'noms'), { recursive: true })
+    await writeFile(join(cwd2, '.beads', 'embeddeddolt', 'proj', '.dolt', 'noms', 'manifest'), 'x')
+    const ask2 = (u) => new Promise((done) => {
+      blockingHandler(
+        { url: `http://127.0.0.1${u}`, method: 'GET', socket: { remoteAddress: '127.0.0.1' } },
+        { writeHead(){}, end(body){ done(JSON.parse(body)) } },
+      )
+    })
+    const inFlight = ask2(`${ROUTE_PATH}?cwd=${encodeURIComponent(cwd2)}&action=issue&id=x`)
+    // Give the gated read a tick to reach its await, so the window is open.
+    await new Promise((done) => setTimeout(done, 50))
+    const during = await ask2(`${ROUTE_PATH}?cwd=${encodeURIComponent(cwd2)}&action=version`)
+    assert.equal(during.busy, true, 'a read in flight must mark the sample as busy')
+    release()
+    const issueBody = await inFlight
+    assert.ok('ok' in issueBody, 'the gated read must complete with a JSON answer')
+    const after = await ask2(`${ROUTE_PATH}?cwd=${encodeURIComponent(cwd2)}&action=version`)
+    assert.equal(after.busy, false, 'once the read settles the sample is valid again')
+    assert.ok(after.version, 'and it reports a fingerprint')
     // The version path answers from the filesystem walk, so the cwd comes back as
     // the caller spelled it (no bd, hence no realpath from `bd where`).
     assert.equal(payload.cwd, cwd)

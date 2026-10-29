@@ -1070,6 +1070,10 @@ window.__ModuleLoader__.load({
         const timer = setInterval(() => {
           api({ cwd, action: 'version' }).then((data) => {
             if (stopped || !data?.ok) return
+            // A `bd` read in flight means this sample is mid-write: the store is
+            // being touched by our own request, so the value is neither the old
+            // state nor the new one. Skip it; the next poll settles.
+            if (data.busy) return
             const version = data.version ?? null
             setSeenVersion((previous) => {
               // The first answer only seeds the baseline; a change from it refreshes.

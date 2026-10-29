@@ -100,10 +100,21 @@ polled value equal to `afterOwnRead` as "the movement was ours", not a change. A
 test walks the exact loop — detail read, then poll twice — and asserts the panel
 sees no change either time.
 
-The general lesson across this plugin's two polling bugs: **any signal you poll
-must be invariant to the act of polling it**. The first version failed because the
-act of resolving the workspace moved the signal; this one because the act of
-reading the data did.
+**One more race in the same family, reported as 0-3 random refreshes on opening a
+detail page.** The busy window above only opened when the handler reached the read
+itself, but the poll could land *before* that — between the request arriving and
+`readsInFlight.add` running — and sample a fingerprint that the in-flight read was
+about to move. And a sample taken *during* the read was neither the old state nor
+the new one. Two changes close it: the busy window opens at the top of the
+bd-reading path (before the first await), and the version answer carries
+`busy: true` while a read is in flight, which the panel treats as "skip this
+sample; the next poll settles".
+
+The general lesson across this plugin's polling bugs: **any signal you poll must be
+invariant to the act of polling it**, and a sample taken mid-write is not a signal
+at all. The first version failed because the act of resolving the workspace moved
+the signal; the second because the act of reading the data did, and the window
+opened too late to mask it.
 
 ## Secondary blocks are washed; the description is not
 

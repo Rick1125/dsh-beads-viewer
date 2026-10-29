@@ -644,6 +644,8 @@ export function makeHandler(deps = {}) {
    * this: equal means "the movement was ours", not "the tracker changed".
    */
   const ownReadFingerprints = new Map()
+  /** Workspaces with a `bd` read in flight right now. */
+  const readsInFlight = new Set()
   const ttl = deps.cacheTtlMs ?? OVERVIEW_TTL_MS
 
   /** One cached overview, or a fresh read when the entry is stale. */
@@ -711,14 +713,22 @@ export function makeHandler(deps = {}) {
         const version = fingerprintWorkspace(beadsDir) ?? null
         // Tell the panel what the fingerprint looked like after our last read, so
         // movement caused by this route's own `bd` spawns is recognisable as ours.
+        // And while a read is in flight, the fingerprint is mid-write: the panel
+        // must skip this sample entirely, because `bd` is touching journal.idx at
+        // this moment and the next poll will settle the value.
         sendJson(res, 200, {
           ok: true,
           cwd: workspace,
           version,
           afterOwnRead: ownReadFingerprints.get(workspace) ?? null,
+          busy: readsInFlight.has(workspace),
         })
         return
       }
+      // Everything from here spawns `bd` (resolution, where, reads) — and spawning
+      // one touches the Dolt store, so mark the window before the first await.
+      const busyKey = await findWorkspace(requested)
+      if (busyKey !== undefined) readsInFlight.add(busyKey)
       const bin = await resolveBdImpl()
       if (bin === undefined) {
         sendJson(res, 200, {
@@ -731,6 +741,7 @@ export function makeHandler(deps = {}) {
       }
       const located = await whereWorkspace(requested, bin)
       const workspace = located?.root ?? (await findWorkspace(requested))
+      if (busyKey !== undefined) readsInFlight.delete(busyKey)
       if (workspace === undefined) {
         sendJson(res, 200, {
           ok: false,
@@ -743,10 +754,17 @@ export function makeHandler(deps = {}) {
       if (action === 'issue') {
         const id = url.searchParams.get('id') ?? ''
         cache.delete(workspace)
-        const body = await readIssue({ cwd: workspace, bin, id })
-        noteOwnRead()
-        sendJson(res, 200, body)
-        return
+        // Mark the read before anything awaits: the spawn window starts here, not
+        // after bd resolves, and a poll landing inside it must see `busy`.
+        readsInFlight.add(workspace)
+        try {
+          const body = await readIssue({ cwd: workspace, bin, id })
+          noteOwnRead()
+          sendJson(res, 200, body)
+          return
+        } finally {
+          readsInFlight.delete(workspace)
+        }
       }
       if (action === 'files') {
         const paths = (url.searchParams.get('paths') ?? '').split('\n').filter(Boolean).slice(0, 200)
@@ -754,9 +772,14 @@ export function makeHandler(deps = {}) {
         sendJson(res, 200, { ok: true, cwd: workspace, files: await checkFiles(workspace, paths, sessionCwd) })
         return
       }
-      const body = await overview(workspace, bin, url.searchParams.get('force') === '1')
-      noteOwnRead()
-      sendJson(res, 200, body)
+      readsInFlight.add(workspace)
+      try {
+        const body = await overview(workspace, bin, url.searchParams.get('force') === '1')
+        noteOwnRead()
+        sendJson(res, 200, body)
+      } finally {
+        readsInFlight.delete(workspace)
+      }
     } catch (error) {
       sendJson(res, 500, {
         ok: false,
