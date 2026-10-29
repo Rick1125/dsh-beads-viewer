@@ -124,12 +124,22 @@ pass and the tests before shipping:**
   keys are normalised through `realpathSync` now, and the version branch's busy
   lookup compares the same way.
 
+**A residual 0-3-refresh race survived all of the above, and it was concurrent
+reads.** Opening a detail page fires an issue read; if the window also regained
+focus at that moment, an overview read fires with it. Two `bd` spawns touch
+journal.idx at unpredictable moments; whichever read completes first pinned the
+`afterOwnRead` baseline, and the other's touch landed after it — the next poll saw
+a value matching neither, and the panel refreshed 0-3 times before converging.
+Fix: `noteOwnRead` records the baseline only when `readsInFlight` is empty again —
+the last completing read is the one whose fingerprint is the truth.
+
 The general lesson across this plugin's polling bugs: **any signal you poll must be
 invariant to the act of polling it**, and a sample taken mid-write is not a signal
 at all. The first version failed because the act of resolving the workspace moved
 the signal; the second because the act of reading the data did, and the window
 opened too late to mask it. The third because the mask itself could outlive its
-usefulness — a fix that stops refreshing is worse than the bug it fixed.
+usefulness — a fix that stops refreshing is worse than the bug it fixed. The fourth
+because two overlapping writes each invalidated the other's mask.
 
 ## Secondary blocks are washed; the description is not
 
