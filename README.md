@@ -14,9 +14,11 @@ the terminal [`bv`](https://github.com/Dicklesworthstone/beads_viewer) viewer.
 </div>
 
 <div align="center">
-  <img src="./docs/list-hover-light.png" alt="Beads panel in the right sidebar" width="420" />
-  &nbsp;
-  <img src="./docs/list-hover-dark.png" alt="Beads panel, dark theme" width="420" />
+
+| 浅色 Light | 深色 Dark |
+| --- | --- |
+| <img src="./docs/list-hover-light.png" alt="Beads panel in the right sidebar" width="100%" /> | <img src="./docs/list-hover-dark.png" alt="Beads panel, dark theme" width="100%" /> |
+
 </div>
 
 ---

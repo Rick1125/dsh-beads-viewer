@@ -13,9 +13,11 @@
 </div>
 
 <div align="center">
-  <img src="./docs/list-hover-light.png" alt="右侧栏中的 Beads 面板" width="420" />
-  &nbsp;
-  <img src="./docs/list-hover-dark.png" alt="深色主题下的 Beads 面板" width="420" />
+
+| 浅色 Light | 深色 Dark |
+| --- | --- |
+| <img src="./docs/list-hover-light.png" alt="右侧栏中的 Beads 面板" width="100%" /> | <img src="./docs/list-hover-dark.png" alt="深色主题下的 Beads 面板" width="100%" /> |
+
 </div>
 
 ---
