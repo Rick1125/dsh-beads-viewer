@@ -110,11 +110,26 @@ bd-reading path (before the first await), and the version answer carries
 `busy: true` while a read is in flight, which the panel treats as "skip this
 sample; the next poll settles".
 
+**The first exception-safe version still leaked, twice — both caught by the review
+pass and the tests before shipping:**
+
+- The busy marker was only released on the normal path. An early return
+  (`bd` binary missing) or a throw would leave the workspace flagged busy forever,
+  and since the panel skips busy samples, live refresh would have silently stopped
+  for the whole session. The whole bd-backed window is now inside a `try/finally`.
+- The busy key and the issue branch's key came from different resolvers:
+  `findWorkspace` spells the caller's path, `bd where` answers the real path (macOS
+  spells `/tmp` as `/private/tmp`). Different strings meant the detail-read window
+  was invisible to the poll — the race the window exists to mask, back again. Both
+  keys are normalised through `realpathSync` now, and the version branch's busy
+  lookup compares the same way.
+
 The general lesson across this plugin's polling bugs: **any signal you poll must be
 invariant to the act of polling it**, and a sample taken mid-write is not a signal
 at all. The first version failed because the act of resolving the workspace moved
 the signal; the second because the act of reading the data did, and the window
-opened too late to mask it.
+opened too late to mask it. The third because the mask itself could outlive its
+usefulness — a fix that stops refreshing is worse than the bug it fixed.
 
 ## Secondary blocks are washed; the description is not
 

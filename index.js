@@ -21,7 +21,7 @@
  */
 import { execFile } from 'node:child_process'
 import { access, stat } from 'node:fs/promises'
-import { readdirSync, statSync } from 'node:fs'
+import { readdirSync, realpathSync, statSync } from 'node:fs'
 import { constants as fsConstants } from 'node:fs'
 import { homedir } from 'node:os'
 import { join, resolve, sep } from 'node:path'
@@ -688,7 +688,7 @@ export function makeHandler(deps = {}) {
         sendJson(res, 400, { ok: false, code: 'no-cwd', message: `Not a directory: ${requested}` })
         return
       }
-      const noteOwnRead = () => {
+      const noteOwnRead = (workspace) => {
         const stamp = fingerprintWorkspace(join(workspace, '.beads'))
         if (stamp !== undefined) ownReadFingerprints.set(workspace, stamp)
         return stamp
@@ -710,6 +710,11 @@ export function makeHandler(deps = {}) {
           return
         }
         const beadsDir = join(workspace, '.beads')
+        // Normalise the busy lookup the same way the issue branch does, or a
+        // /tmp-vs-/private/tmp path spelling hides the in-flight window.
+        const busyNow = [...readsInFlight].some((key) => {
+          try { return key === realpathSync(workspace) } catch { return key === workspace }
+        })
         const version = fingerprintWorkspace(beadsDir) ?? null
         // Tell the panel what the fingerprint looked like after our last read, so
         // movement caused by this route's own `bd` spawns is recognisable as ours.
@@ -721,64 +726,78 @@ export function makeHandler(deps = {}) {
           cwd: workspace,
           version,
           afterOwnRead: ownReadFingerprints.get(workspace) ?? null,
-          busy: readsInFlight.has(workspace),
+          busy: busyNow,
         })
         return
       }
       // Everything from here spawns `bd` (resolution, where, reads) — and spawning
       // one touches the Dolt store, so mark the window before the first await.
-      const busyKey = await findWorkspace(requested)
+      // Everything from here spawns `bd` (resolution, where, reads) — and spawning
+      // one touches the Dolt store, so the busy window opens before the first await
+      // and is closed in a finally. Both matter: an early return or a throw that
+      // left the marker set would keep that workspace busy forever, and the panel
+      // skips busy samples — live refresh would silently stop for the session.
+      // realpathSync normalises the key: `bd where` answers the real path (macOS
+      // spells /tmp as /private/tmp), and the busy marker must match the key the
+      // issue branch uses, or the detail-read window is invisible to the poll.
+      const walked = await findWorkspace(requested)
+      const busyKey = walked !== undefined ? realpathSync(walked) : undefined
       if (busyKey !== undefined) readsInFlight.add(busyKey)
-      const bin = await resolveBdImpl()
-      if (bin === undefined) {
-        sendJson(res, 200, {
-          ok: false,
-          code: 'bd-missing',
-          cwd: requested,
-          message: 'The bd CLI is not on this machine’s PATH.',
-        })
-        return
-      }
-      const located = await whereWorkspace(requested, bin)
-      const workspace = located?.root ?? (await findWorkspace(requested))
-      if (busyKey !== undefined) readsInFlight.delete(busyKey)
-      if (workspace === undefined) {
-        sendJson(res, 200, {
-          ok: false,
-          code: 'no-workspace',
-          cwd: requested,
-          message: 'This project has no Beads workspace (no .beads directory).',
-        })
-        return
-      }
-      if (action === 'issue') {
-        const id = url.searchParams.get('id') ?? ''
-        cache.delete(workspace)
-        // Mark the read before anything awaits: the spawn window starts here, not
-        // after bd resolves, and a poll landing inside it must see `busy`.
-        readsInFlight.add(workspace)
-        try {
-          const body = await readIssue({ cwd: workspace, bin, id })
-          noteOwnRead()
+      try {
+        const bin = await resolveBdImpl()
+        if (bin === undefined) {
+          sendJson(res, 200, {
+            ok: false,
+            code: 'bd-missing',
+            cwd: requested,
+            message: 'The bd CLI is not on this machine’s PATH.',
+          })
+          return
+        }
+        const located = await whereWorkspace(requested, bin)
+        const workspace = located?.root ?? (await findWorkspace(requested))
+        if (workspace === undefined) {
+          sendJson(res, 200, {
+            ok: false,
+            code: 'no-workspace',
+            cwd: requested,
+            message: 'This project has no Beads workspace (no .beads directory).',
+          })
+          return
+        }
+        // The bd-backed actions run inside this try, so the marker is released on
+        // every exit path below. The version branch is not here: it must not spawn
+        // bd at all, so it answers before this try begins (the busy window still
+        // covers it — a poll arriving while an issue read runs sees busy).
+        if (action === 'issue') {
+          const id = url.searchParams.get('id') ?? ''
+          cache.delete(workspace)
+          // Normalise the key the same way the busy window does, so a poll can see
+          // this read's window regardless of how each branch spelled the path.
+          const issueKey = realpathSync(workspace)
+          readsInFlight.add(issueKey)
+          try {
+            const body = await readIssue({ cwd: workspace, bin, id })
+            noteOwnRead(workspace)
+            sendJson(res, 200, body)
+            return
+          } finally {
+            readsInFlight.delete(issueKey)
+          }
+        }
+        if (action === 'files') {
+          const paths = (url.searchParams.get('paths') ?? '').split('\n').filter(Boolean).slice(0, 200)
+          const sessionCwd = url.searchParams.get('sessionCwd') ?? undefined
+          const body = { ok: true, cwd: workspace, files: await checkFiles(workspace, paths, sessionCwd) }
+          noteOwnRead(workspace)
           sendJson(res, 200, body)
           return
-        } finally {
-          readsInFlight.delete(workspace)
         }
-      }
-      if (action === 'files') {
-        const paths = (url.searchParams.get('paths') ?? '').split('\n').filter(Boolean).slice(0, 200)
-        const sessionCwd = url.searchParams.get('sessionCwd') ?? undefined
-        sendJson(res, 200, { ok: true, cwd: workspace, files: await checkFiles(workspace, paths, sessionCwd) })
-        return
-      }
-      readsInFlight.add(workspace)
-      try {
         const body = await overview(workspace, bin, url.searchParams.get('force') === '1')
-        noteOwnRead()
+        noteOwnRead(workspace)
         sendJson(res, 200, body)
       } finally {
-        readsInFlight.delete(workspace)
+        if (busyKey !== undefined) readsInFlight.delete(busyKey)
       }
     } catch (error) {
       sendJson(res, 500, {
