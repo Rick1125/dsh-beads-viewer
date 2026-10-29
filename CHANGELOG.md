@@ -1,6 +1,42 @@
 # Changelog
 
+## 1.1.0
+
+**The panel now notices writes that happen outside this window.**
+
+- **External updates refresh automatically.** An issue created, edited or closed
+  from a terminal — or from another session — appears in the panel within about five
+  seconds, with no Refresh click and no window focus. The Host answers a
+  `?action=version` route with a fingerprint stat'd from the Beads store's own
+  files (~3ms, no subprocess); the panel polls it while visible, and only a change
+  spends the real read. An open detail view refreshes with the list.
+  - Deliberately no `bd` in that route: spawning `bd` opens the Dolt store, which
+    touches `journal.idx` and would move the fingerprint the route just read —
+    every poll would look like a change. Lock files are skipped for the same
+    reason: they tick on process starts, not on data changes.
+
+**Two regressions from 1.0.0 fixed, both reported against real use**
+
+- **The interface kept its language across a Harness restart.** The locale service
+  was read with a bare `ctx.get('locale')`, which only works when the locale plugin
+  happens to activate first; on other boots the whole locale block was skipped
+  silently and the panel rendered English. The service is now declared
+  (`inject: ['slots', 'locale']`), so Cordis resolves it before `apply` runs.
+- **The two hero screenshots stayed side by side.** They were fixed-width images
+  in a centered div; below a ~850px container the second wrapped under the first.
+  They are now two table cells at 100% width each.
+
+**Also**
+
+- `.beads/issues.jsonl` (the lazy export `bd` refreshes on every write) is no
+  longer tracked — it churned the repository and published every issue's text.
+- The npm package declares its `repository` field, so registry download counts
+  link back to this repository; `screenshots.json` declares four storefront
+  images; the repo pins npmjs.org as its registry.
+
 ## 1.0.0
+
+First release.
 
 First release.
 
