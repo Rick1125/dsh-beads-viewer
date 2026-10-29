@@ -712,9 +712,8 @@ export function makeHandler(deps = {}) {
         const beadsDir = join(workspace, '.beads')
         // Normalise the busy lookup the same way the issue branch does, or a
         // /tmp-vs-/private/tmp path spelling hides the in-flight window.
-        const busyNow = [...readsInFlight].some((key) => {
-          try { return key === realpathSync(workspace) } catch { return key === workspace }
-        })
+        let busyNow = false
+        try { busyNow = readsInFlight.has(realpathSync(workspace)) } catch { busyNow = false }
         const version = fingerprintWorkspace(beadsDir) ?? null
         // Tell the panel what the fingerprint looked like after our last read, so
         // movement caused by this route's own `bd` spawns is recognisable as ours.
@@ -730,8 +729,6 @@ export function makeHandler(deps = {}) {
         })
         return
       }
-      // Everything from here spawns `bd` (resolution, where, reads) — and spawning
-      // one touches the Dolt store, so mark the window before the first await.
       // Everything from here spawns `bd` (resolution, where, reads) — and spawning
       // one touches the Dolt store, so the busy window opens before the first await
       // and is closed in a finally. Both matter: an early return or a throw that
