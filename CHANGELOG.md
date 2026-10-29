@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.1.1
+
+**An open detail view no longer re-renders itself about once a second.**
+
+- Opening a detail view serves `action=issue`, which spawns `bd` — and spawning
+  `bd` opens the Dolt store and touches `journal.idx`. The next fingerprint poll
+  saw a moved value, forced a refresh, and the refresh moved it again: the view
+  re-rendered forever. The Host now records the workspace fingerprint right after
+  every route that spawns `bd`, and the version answer carries it as
+  `afterOwnRead`; the panel treats a polled value equal to that as its own
+  movement, not a tracker change. A test walks the loop — detail read, poll,
+  poll — and asserts no change is seen either time.
+
+
 ## 1.1.0
 
 **The panel now notices writes that happen outside this window.**
@@ -34,18 +48,6 @@
   link back to this repository; `screenshots.json` declares four storefront
   images; the repo pins npmjs.org as its registry.
 
-## 1.1.1
-
-**An open detail view no longer re-renders itself about once a second.**
-
-- Opening a detail view serves `action=issue`, which spawns `bd` — and spawning
-  `bd` opens the Dolt store and touches `journal.idx`. The next fingerprint poll
-  saw a moved value, forced a refresh, and the refresh moved it again: the view
-  re-rendered forever. The Host now records the workspace fingerprint right after
-  every route that spawns `bd`, and the version answer carries it as
-  `afterOwnRead`; the panel treats a polled value equal to that as its own
-  movement, not a tracker change. A test walks the loop — detail read, poll,
-  poll — and asserts no change is seen either time.
 
 ## 1.0.0
 
