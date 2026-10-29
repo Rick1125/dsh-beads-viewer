@@ -130,10 +130,14 @@ focus at that moment, an overview read fires with it. Two `bd` spawns touch
 journal.idx at unpredictable moments; whichever read completes first pinned the
 `afterOwnRead` baseline, and the other's touch landed after it — the next poll saw
 a value matching neither, and the panel refreshed 0-3 times before converging.
-Fix: a read releases its in-flight key in a `finally` and then calls
-`readCompleted`, which records the baseline only once no sibling read for the same
-workspace is still in flight — the last completing read is the one whose
-fingerprint is the truth. The baseline is keyed by `realpathSync(workspace)`, since
+Fix: in-flight reads are **counted per workspace** (`Map<realpath, number>`), not
+keyed as a set — a set collapses two concurrent reads of the same workspace into
+one entry, so the first finisher would delete it, see no sibling, and pin the
+baseline while the other `bd` was still running. Each read releases its slot in a
+`finally`; only the release that takes the count to zero records the fingerprint,
+so the last completing read is the one whose version is the truth. The count also
+scopes sibling detection to that workspace, so a read of another workspace cannot
+suppress this baseline. The baseline is keyed by `realpathSync(workspace)`, since
 the read routes and the version route spell a macOS temp path differently.
 
 The general lesson across this plugin's polling bugs: **any signal you poll must be

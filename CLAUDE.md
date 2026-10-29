@@ -66,7 +66,7 @@ without it).
 
 ```bash
 npm install   # only for the React used by the render tests
-npm test      # 107 checks across five suites (~40s)
+npm test      # 108 checks across five suites (~40s)
 npm run test:client       # Markdown parser, path extraction, file addresses, list indent
 npm run test:panel        # the panel's states, rendered with real React
 ```

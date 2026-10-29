@@ -599,7 +599,7 @@ results.push({
 })
 
 results.push({
-  name: 'two overlapping reads leave a baseline whichever completes last',
+  name: 'overlapping reads of one workspace record the baseline only after the last settles',
   skip: false,
   fn: async () => {
     const dir = await mkdtemp(join(tmpdir(), 'bv-race-'))
@@ -607,17 +607,18 @@ results.push({
     await mkdir(join(root, '.beads', 'embeddeddolt', 'proj', '.dolt', 'noms'), { recursive: true })
     await writeFile(join(root, '.beads', 'embeddeddolt', 'proj', '.dolt', 'noms', 'manifest'), 'x')
     const seen = []
-    // Two gated reads that complete in a controlled order.
+    // One gate per read: each request stalls inside resolveBd until its gate opens,
+    // so the two reads can be finished in a controlled order.
     const gates = []
-    const makeGate = () => new Promise((done) => { gates.push(done) })
-    makeGate(); makeGate()
-    let releaseCount = 0
+    const releases = []
+    for (let i = 0; i < 2; i += 1) gates.push(new Promise((done) => releases.push(done)))
+    let gateIndex = 0
     const ctx = {
       get: (key) => (key === 'webServer' ? { register: (route) => seen.push(route) } : undefined),
       inject: (names, callback) => callback({ get: (key) => (key === 'webServer' ? { register: (route) => seen.push(route) } : undefined), effect: (fn) => fn() }),
       effect: (fn) => fn(),
     }
-    apply(ctx, { handlerDeps: { resolveBd: async () => { await gates[releaseCount]; return 'bd' } } })
+    apply(ctx, { handlerDeps: { resolveBd: async () => { const gate = gates[gateIndex++]; await gate; return 'bd' } } })
     const handler = seen[0].handler
     const ask = (qs) => new Promise((done) => {
       handler(
@@ -626,24 +627,77 @@ results.push({
       )
     })
     const qs = `?cwd=${encodeURIComponent(root)}`
-    // Two overlapping reads: neither completes until released.
+    // Two overlapping reads of the SAME workspace: an overview and an issue read.
     const first = ask(`${qs}&action=overview`)
     const second = ask(`${qs}&action=issue&id=x`)
+    // Both requests must be inside their bd window (counted) before either is released.
+    while (gateIndex < 2) await new Promise((done) => setTimeout(done, 5))
 
-    // Both complete: release both, and let the microtasks settle so each finally
-    // runs before the check.
-    gates[0]()
-    gates[1]()
-    await Promise.all([first, second])
+    // Stage 1: only one read finishes. Its sibling is still inside its bd window, so
+    // the workspace must still read busy and no baseline may be pinned yet.
+    releases[0]()
+    await first
+    const mid = await ask(`${qs}&action=version`)
+    assert.equal(mid.busy, true, 'a sibling read still in flight keeps the workspace busy')
+    assert.equal(mid.afterOwnRead, null, 'the first finisher must not pin the baseline')
+
+    // Stage 2: the last read settles; now the baseline exists and the polls agree.
+    releases[1]()
+    await second
     await new Promise((done) => setTimeout(done, 20))
-
-    // The baseline must exist and the polls must agree with each other: this is
-    // what the panel compares against, whichever read happened to finish last.
     const p1 = await ask(`${qs}&action=version`)
     const p2 = await ask(`${qs}&action=version`)
-    assert.ok(p1.version && p1.version === p2.version, 'polls must be stable once reads settle')
-    assert.ok(p1.afterOwnRead, 'a baseline must exist after overlapping reads')
     assert.equal(p1.busy, false, 'no reads may remain in flight')
+    assert.ok(p1.afterOwnRead, 'a baseline must exist after the last overlapping read')
+    assert.equal(p1.afterOwnRead, p1.version, 'the baseline must be the settled fingerprint')
+    assert.equal(p1.version, p2.version, 'polls must agree once the reads settle')
+    await rm(dir, { recursive: true, force: true })
+  },
+})
+
+results.push({
+  name: 'a read in another workspace does not suppress this workspace baseline',
+  skip: false,
+  fn: async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'bv-xws-'))
+    const roots = [join(dir, 'a'), join(dir, 'b')]
+    for (const root of roots) {
+      await mkdir(join(root, '.beads', 'embeddeddolt', 'proj', '.dolt', 'noms'), { recursive: true })
+      await writeFile(join(root, '.beads', 'embeddeddolt', 'proj', '.dolt', 'noms', 'manifest'), 'x')
+    }
+    const seen = []
+    const gates = []
+    const releases = []
+    for (let i = 0; i < 2; i += 1) gates.push(new Promise((done) => releases.push(done)))
+    let gateIndex = 0
+    const ctx = {
+      get: (key) => (key === 'webServer' ? { register: (route) => seen.push(route) } : undefined),
+      inject: (names, callback) => callback({ get: (key) => (key === 'webServer' ? { register: (route) => seen.push(route) } : undefined), effect: (fn) => fn() }),
+      effect: (fn) => fn(),
+    }
+    apply(ctx, { handlerDeps: { resolveBd: async () => { const gate = gates[gateIndex++]; await gate; return 'bd' } } })
+    const handler = seen[0].handler
+    const ask = (qs) => new Promise((done) => {
+      handler(
+        { url: `http://127.0.0.1${qs}`, method: 'GET', socket: { remoteAddress: '127.0.0.1' } },
+        { writeHead(){}, end(body){ done(JSON.parse(body)) } },
+      )
+    })
+    const qa = `?cwd=${encodeURIComponent(roots[0])}`
+    const qb = `?cwd=${encodeURIComponent(roots[1])}`
+    // A's read finishes while B's is still in flight; A must still get its baseline.
+    const readA = ask(`${qa}&action=overview`)
+    const readB = ask(`${qb}&action=overview`)
+    // Both requests must be inside their bd window before either is released.
+    while (gateIndex < 2) await new Promise((done) => setTimeout(done, 5))
+    releases[0]()
+    await readA
+    const pollA = await ask(`${qa}&action=version`)
+    assert.ok(pollA.afterOwnRead, 'another workspace being busy must not drop A’s baseline')
+    releases[1]()
+    await readB
+    const pollA2 = await ask(`${qa}&action=version`)
+    assert.equal(pollA2.afterOwnRead, pollA.afterOwnRead, 'A’s baseline is stable across B’s completion')
     await rm(dir, { recursive: true, force: true })
   },
 })

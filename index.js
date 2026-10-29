@@ -644,19 +644,6 @@ export function makeHandler(deps = {}) {
    * this: equal means "the movement was ours", not "the tracker changed".
    */
   const ownReadFingerprints = new Map()
-  /** Workspaces with a `bd` read in flight right now. */
-  const readsInFlight = new Set()
-
-  /**
-   * Record the workspace fingerprint once every in-flight read for it has finished.
-   *
-   * Concurrent bd reads (a focus bump's overview racing a row click's issue read)
-   * each touch journal.idx at unpredictable moments; the baseline must come from
-   * the LAST completing read, or the next poll sees a value matching neither the
-   * old state nor the baseline. Callers release their own in-flight key first and
-   * then call this; a sibling key still present means another read is finishing
-   * after this one, and that one records the baseline instead.
-   */
   // The read routes learn the workspace from `bd where` (a real path) while the
   // version route walks up from the session cwd (which keeps the spelling it was
   // given, e.g. macOS `/var` for `/private/var`). The baseline is one value per
@@ -669,24 +656,42 @@ export function makeHandler(deps = {}) {
     }
   }
 
-  const readCompleted = (workspace, selfKey) => {
-    // A sibling key still present means another read is finishing after this one;
-    // that read records the baseline instead. The window's own key does not count —
-    // it is held by the window itself until its finally, not by a concurrent read.
-    let siblings = false
-    try {
-      const own = realpathSync(workspace)
-      for (const key of readsInFlight) {
-        if (key === selfKey || key === own) continue
-        siblings = true
-        break
-      }
-    } catch {
-      siblings = false
+  /**
+   * In-flight `bd` reads, per workspace: realpath → number of overlapping requests.
+   *
+   * A count, not a set. A focus bump's overview read and a row click's issue read
+   * for the SAME workspace are two distinct reads that resolve to one path — a Set
+   * collapses them, so the first finisher deletes the entry, sees no sibling, and
+   * pins the `afterOwnRead` baseline while the other `bd` is still about to touch
+   * journal.idx. A count keeps them distinct, and scopes the "is a sibling still
+   * running?" question to this workspace only (a read of another workspace must
+   * never suppress this one's baseline).
+   */
+  const readsInFlight = new Map()
+
+  const beginRead = (workspace) => {
+    const key = baselineKey(workspace)
+    readsInFlight.set(key, (readsInFlight.get(key) ?? 0) + 1)
+    return key
+  }
+
+  /**
+   * Release one in-flight read. Only when it was the last one for this workspace is
+   * the fingerprint recorded as the baseline: a read that finishes while a sibling
+   * is still running must not pin a value the sibling is about to invalidate.
+   * `stampWorkspace` is only used to compute the fingerprint; it may be undefined on
+   * an early error path, in which case just release the count.
+   */
+  const endRead = (key, stampWorkspace) => {
+    const remaining = (readsInFlight.get(key) ?? 1) - 1
+    if (remaining > 0) {
+      readsInFlight.set(key, remaining)
+      return undefined
     }
-    if (siblings) return
-    const stamp = fingerprintWorkspace(join(workspace, '.beads'))
-    if (stamp !== undefined) ownReadFingerprints.set(baselineKey(workspace), stamp)
+    readsInFlight.delete(key)
+    if (stampWorkspace === undefined) return undefined
+    const stamp = fingerprintWorkspace(join(stampWorkspace, '.beads'))
+    if (stamp !== undefined) ownReadFingerprints.set(key, stamp)
     return stamp
   }
   const ttl = deps.cacheTtlMs ?? OVERVIEW_TTL_MS
@@ -751,7 +756,7 @@ export function makeHandler(deps = {}) {
         // Normalise the busy lookup the same way the issue branch does, or a
         // /tmp-vs-/private/tmp path spelling hides the in-flight window.
         let busyNow = false
-        try { busyNow = readsInFlight.has(realpathSync(workspace)) } catch { busyNow = false }
+        try { busyNow = (readsInFlight.get(realpathSync(workspace)) ?? 0) > 0 } catch { busyNow = false }
         const version = fingerprintWorkspace(beadsDir) ?? null
         // Tell the panel what the fingerprint looked like after our last read, so
         // movement caused by this route's own `bd` spawns is recognisable as ours.
@@ -774,10 +779,10 @@ export function makeHandler(deps = {}) {
       // skips busy samples — live refresh would silently stop for the session.
       // realpathSync normalises the key: `bd where` answers the real path (macOS
       // spells /tmp as /private/tmp), and the busy marker must match the key the
-      // issue branch uses, or the detail-read window is invisible to the poll.
+      // version route computes, or an in-flight read would be invisible to the poll.
       const walked = await findWorkspace(requested)
-      const busyKey = walked !== undefined ? realpathSync(walked) : undefined
-      if (busyKey !== undefined) readsInFlight.add(busyKey)
+      const busyKey = walked !== undefined ? beginRead(walked) : undefined
+      let workspace
       try {
         const bin = await resolveBdImpl()
         if (bin === undefined) {
@@ -790,7 +795,7 @@ export function makeHandler(deps = {}) {
           return
         }
         const located = await whereWorkspace(requested, bin)
-        const workspace = located?.root ?? (await findWorkspace(requested))
+        workspace = located?.root ?? (await findWorkspace(requested))
         if (workspace === undefined) {
           sendJson(res, 200, {
             ok: false,
@@ -807,19 +812,7 @@ export function makeHandler(deps = {}) {
         if (action === 'issue') {
           const id = url.searchParams.get('id') ?? ''
           cache.delete(workspace)
-          // Normalise the key the same way the busy window does, so a poll can see
-          // this read's window regardless of how each branch spelled the path.
-          const issueKey = realpathSync(workspace)
-          readsInFlight.add(issueKey)
-          let body
-          try {
-            body = await readIssue({ cwd: workspace, bin, id })
-          } finally {
-            readsInFlight.delete(issueKey)
-            // Baseline is recorded after the key is released, so the last
-            // completing read for this workspace is the one that records it.
-            readCompleted(workspace, issueKey)
-          }
+          const body = await readIssue({ cwd: workspace, bin, id })
           sendJson(res, 200, body)
           return
         }
@@ -827,15 +820,16 @@ export function makeHandler(deps = {}) {
           const paths = (url.searchParams.get('paths') ?? '').split('\n').filter(Boolean).slice(0, 200)
           const sessionCwd = url.searchParams.get('sessionCwd') ?? undefined
           const body = { ok: true, cwd: workspace, files: await checkFiles(workspace, paths, sessionCwd) }
-          readCompleted(workspace, busyKey)
           sendJson(res, 200, body)
           return
         }
         const body = await overview(workspace, bin, url.searchParams.get('force') === '1')
-        readCompleted(workspace, busyKey)
         sendJson(res, 200, body)
       } finally {
-        if (busyKey !== undefined) readsInFlight.delete(busyKey)
+        // Release in the finally so an early return or a throw cannot wedge the
+        // workspace busy; if this was the last overlapping read, the baseline is
+        // recorded here — after the read finished, when no sibling is still running.
+        if (busyKey !== undefined) endRead(busyKey, workspace ?? walked)
       }
     } catch (error) {
       sendJson(res, 500, {

@@ -11,11 +11,14 @@ whichever read returned, but the other read's touch could land *after* that
 baseline was pinned — so the next poll saw a value matching neither the old state
 nor the baseline and refreshed a few more times before settling.
 
-- **The baseline now comes from the last completing read.** A workspace counts as
-  "still busy" until every overlapping read has released its in-flight key; only
-  then is the fingerprint recorded. A read that finishes while a sibling is still
-  running no longer pins a baseline that sibling is about to invalidate. The
-  in-flight marker is also released in a `finally`, so a failed read cannot wedge
+- **The baseline now comes from the last completing read.** In-flight reads are
+  counted per workspace — a path-keyed set would collapse the overview and issue
+  reads of one workspace into a single entry, so the first finisher would think it
+  was alone and pin the baseline while the other `bd` was still running. A read
+  that finishes while a sibling is in flight only decrements the count; the
+  fingerprint is recorded when the last one releases. Sibling detection is scoped
+  to that workspace, so a read of another workspace cannot suppress this one's
+  baseline. The count is released in a `finally`, so a failed read cannot wedge
   the workspace busy forever.
 - **One baseline, one key.** The read routes learn the workspace from `bd where`
   (a real path, `…/private/var/…`) while the version route walks up from the
@@ -23,9 +26,11 @@ nor the baseline and refreshed a few more times before settling.
   through `realpathSync` before storing or reading the baseline, so the lookup
   never misses on macOS's symlinked temp paths.
 
-Covered by a new gated test, *two overlapping reads leave a baseline whichever
-completes last*: two reads held open, released together, then polled twice — the
-polls must agree and a baseline must exist. **107 checks** across five suites.
+Covered by two gated tests: *overlapping reads of one workspace record the baseline
+only after the last settles* (release one read, poll — busy, no baseline; release
+the other, poll — the baseline equals the settled fingerprint) and *a read in
+another workspace does not suppress this workspace baseline*. **108 checks**
+across five suites.
 
 ## 1.1.2
 
