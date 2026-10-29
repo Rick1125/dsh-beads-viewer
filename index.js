@@ -646,6 +646,49 @@ export function makeHandler(deps = {}) {
   const ownReadFingerprints = new Map()
   /** Workspaces with a `bd` read in flight right now. */
   const readsInFlight = new Set()
+
+  /**
+   * Record the workspace fingerprint once every in-flight read for it has finished.
+   *
+   * Concurrent bd reads (a focus bump's overview racing a row click's issue read)
+   * each touch journal.idx at unpredictable moments; the baseline must come from
+   * the LAST completing read, or the next poll sees a value matching neither the
+   * old state nor the baseline. Callers release their own in-flight key first and
+   * then call this; a sibling key still present means another read is finishing
+   * after this one, and that one records the baseline instead.
+   */
+  // The read routes learn the workspace from `bd where` (a real path) while the
+  // version route walks up from the session cwd (which keeps the spelling it was
+  // given, e.g. macOS `/var` for `/private/var`). The baseline is one value per
+  // workspace, so both sides must agree on the key or the lookup misses.
+  const baselineKey = (workspace) => {
+    try {
+      return realpathSync(workspace)
+    } catch {
+      return workspace
+    }
+  }
+
+  const readCompleted = (workspace, selfKey) => {
+    // A sibling key still present means another read is finishing after this one;
+    // that read records the baseline instead. The window's own key does not count —
+    // it is held by the window itself until its finally, not by a concurrent read.
+    let siblings = false
+    try {
+      const own = realpathSync(workspace)
+      for (const key of readsInFlight) {
+        if (key === selfKey || key === own) continue
+        siblings = true
+        break
+      }
+    } catch {
+      siblings = false
+    }
+    if (siblings) return
+    const stamp = fingerprintWorkspace(join(workspace, '.beads'))
+    if (stamp !== undefined) ownReadFingerprints.set(baselineKey(workspace), stamp)
+    return stamp
+  }
   const ttl = deps.cacheTtlMs ?? OVERVIEW_TTL_MS
 
   /** One cached overview, or a fresh read when the entry is stale. */
@@ -688,11 +731,6 @@ export function makeHandler(deps = {}) {
         sendJson(res, 400, { ok: false, code: 'no-cwd', message: `Not a directory: ${requested}` })
         return
       }
-      const noteOwnRead = (workspace) => {
-        const stamp = fingerprintWorkspace(join(workspace, '.beads'))
-        if (stamp !== undefined) ownReadFingerprints.set(workspace, stamp)
-        return stamp
-      }
       // The change signal is answered without `bd` at all: its whole point is to be
       // cheap enough to poll. That means no `bd where` either — spawning `bd` opens
       // the Dolt store, which touches journal.idx, which would move the very
@@ -724,7 +762,7 @@ export function makeHandler(deps = {}) {
           ok: true,
           cwd: workspace,
           version,
-          afterOwnRead: ownReadFingerprints.get(workspace) ?? null,
+          afterOwnRead: ownReadFingerprints.get(baselineKey(workspace)) ?? null,
           busy: busyNow,
         })
         return
@@ -773,25 +811,28 @@ export function makeHandler(deps = {}) {
           // this read's window regardless of how each branch spelled the path.
           const issueKey = realpathSync(workspace)
           readsInFlight.add(issueKey)
+          let body
           try {
-            const body = await readIssue({ cwd: workspace, bin, id })
-            noteOwnRead(workspace)
-            sendJson(res, 200, body)
-            return
+            body = await readIssue({ cwd: workspace, bin, id })
           } finally {
             readsInFlight.delete(issueKey)
+            // Baseline is recorded after the key is released, so the last
+            // completing read for this workspace is the one that records it.
+            readCompleted(workspace, issueKey)
           }
+          sendJson(res, 200, body)
+          return
         }
         if (action === 'files') {
           const paths = (url.searchParams.get('paths') ?? '').split('\n').filter(Boolean).slice(0, 200)
           const sessionCwd = url.searchParams.get('sessionCwd') ?? undefined
           const body = { ok: true, cwd: workspace, files: await checkFiles(workspace, paths, sessionCwd) }
-          noteOwnRead(workspace)
+          readCompleted(workspace, busyKey)
           sendJson(res, 200, body)
           return
         }
         const body = await overview(workspace, bin, url.searchParams.get('force') === '1')
-        noteOwnRead(workspace)
+        readCompleted(workspace, busyKey)
         sendJson(res, 200, body)
       } finally {
         if (busyKey !== undefined) readsInFlight.delete(busyKey)

@@ -1,5 +1,32 @@
 # Changelog
 
+## 1.1.3
+
+**The last of the detail-page refreshes: a concurrent read race.**
+
+Opening a detail page fires an issue read; a window focus at the same moment
+fires an overview read alongside it. Both spawn `bd`, and each touches
+`journal.idx` at its own moment. 1.1.2 recorded the `afterOwnRead` baseline from
+whichever read returned, but the other read's touch could land *after* that
+baseline was pinned — so the next poll saw a value matching neither the old state
+nor the baseline and refreshed a few more times before settling.
+
+- **The baseline now comes from the last completing read.** A workspace counts as
+  "still busy" until every overlapping read has released its in-flight key; only
+  then is the fingerprint recorded. A read that finishes while a sibling is still
+  running no longer pins a baseline that sibling is about to invalidate. The
+  in-flight marker is also released in a `finally`, so a failed read cannot wedge
+  the workspace busy forever.
+- **One baseline, one key.** The read routes learn the workspace from `bd where`
+  (a real path, `…/private/var/…`) while the version route walks up from the
+  session's cwd (which keeps its spelling, `…/var/…`). Both sides now normalise
+  through `realpathSync` before storing or reading the baseline, so the lookup
+  never misses on macOS's symlinked temp paths.
+
+Covered by a new gated test, *two overlapping reads leave a baseline whichever
+completes last*: two reads held open, released together, then polled twice — the
+polls must agree and a baseline must exist. **107 checks** across five suites.
+
 ## 1.1.2
 
 **Opening a detail page caused 0-3 random refreshes; now none.**

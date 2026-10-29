@@ -130,8 +130,11 @@ focus at that moment, an overview read fires with it. Two `bd` spawns touch
 journal.idx at unpredictable moments; whichever read completes first pinned the
 `afterOwnRead` baseline, and the other's touch landed after it — the next poll saw
 a value matching neither, and the panel refreshed 0-3 times before converging.
-Fix: `noteOwnRead` records the baseline only when `readsInFlight` is empty again —
-the last completing read is the one whose fingerprint is the truth.
+Fix: a read releases its in-flight key in a `finally` and then calls
+`readCompleted`, which records the baseline only once no sibling read for the same
+workspace is still in flight — the last completing read is the one whose
+fingerprint is the truth. The baseline is keyed by `realpathSync(workspace)`, since
+the read routes and the version route spell a macOS temp path differently.
 
 The general lesson across this plugin's polling bugs: **any signal you poll must be
 invariant to the act of polling it**, and a sample taken mid-write is not a signal

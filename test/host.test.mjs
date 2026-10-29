@@ -598,6 +598,56 @@ results.push({
   },
 })
 
+results.push({
+  name: 'two overlapping reads leave a baseline whichever completes last',
+  skip: false,
+  fn: async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'bv-race-'))
+    const root = join(dir, 'proj')
+    await mkdir(join(root, '.beads', 'embeddeddolt', 'proj', '.dolt', 'noms'), { recursive: true })
+    await writeFile(join(root, '.beads', 'embeddeddolt', 'proj', '.dolt', 'noms', 'manifest'), 'x')
+    const seen = []
+    // Two gated reads that complete in a controlled order.
+    const gates = []
+    const makeGate = () => new Promise((done) => { gates.push(done) })
+    makeGate(); makeGate()
+    let releaseCount = 0
+    const ctx = {
+      get: (key) => (key === 'webServer' ? { register: (route) => seen.push(route) } : undefined),
+      inject: (names, callback) => callback({ get: (key) => (key === 'webServer' ? { register: (route) => seen.push(route) } : undefined), effect: (fn) => fn() }),
+      effect: (fn) => fn(),
+    }
+    apply(ctx, { handlerDeps: { resolveBd: async () => { await gates[releaseCount]; return 'bd' } } })
+    const handler = seen[0].handler
+    const ask = (qs) => new Promise((done) => {
+      handler(
+        { url: `http://127.0.0.1${qs}`, method: 'GET', socket: { remoteAddress: '127.0.0.1' } },
+        { writeHead(){}, end(body){ done(JSON.parse(body)) } },
+      )
+    })
+    const qs = `?cwd=${encodeURIComponent(root)}`
+    // Two overlapping reads: neither completes until released.
+    const first = ask(`${qs}&action=overview`)
+    const second = ask(`${qs}&action=issue&id=x`)
+
+    // Both complete: release both, and let the microtasks settle so each finally
+    // runs before the check.
+    gates[0]()
+    gates[1]()
+    await Promise.all([first, second])
+    await new Promise((done) => setTimeout(done, 20))
+
+    // The baseline must exist and the polls must agree with each other: this is
+    // what the panel compares against, whichever read happened to finish last.
+    const p1 = await ask(`${qs}&action=version`)
+    const p2 = await ask(`${qs}&action=version`)
+    assert.ok(p1.version && p1.version === p2.version, 'polls must be stable once reads settle')
+    assert.ok(p1.afterOwnRead, 'a baseline must exist after overlapping reads')
+    assert.equal(p1.busy, false, 'no reads may remain in flight')
+    await rm(dir, { recursive: true, force: true })
+  },
+})
+
 for (const { name, fn } of results) {
   const ctx = { skip: (reason) => console.log(`SKIP ${name} — ${reason}`) }
   try {
