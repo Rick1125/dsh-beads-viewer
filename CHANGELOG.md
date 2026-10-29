@@ -42,8 +42,6 @@
 
 First release.
 
-First release.
-
 **The tab**
 
 - Lives in the right sidebar as its own tab type (`beads`), beside Files and the
