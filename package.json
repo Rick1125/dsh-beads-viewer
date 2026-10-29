@@ -29,7 +29,9 @@
     "test/*.mjs",
     "README.md",
     "DECISIONS.md",
-    "CHANGELOG.md"
+    "CHANGELOG.md",
+    "README_ZH.md",
+    "LICENSE"
   ],
   "dsh": {
     "bundle": {
