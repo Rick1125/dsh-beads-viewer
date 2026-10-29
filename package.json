@@ -75,5 +75,9 @@
     "react-dom": {
       "optional": true
     }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Rick1125/dsh-beads-viewer.git"
   }
 }
