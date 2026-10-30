@@ -165,10 +165,12 @@ tracker really changed.
 3. **One checker, one baseline.** Focus and poll share one `checkVersion` closure
    and one `seenVersionRef`; a concurrent trigger is ignored and the baseline moves
    on the first answer, so two near-simultaneous triggers cannot queue two reads.
-   The in-flight gate is cleared in a `finally`: a rejected check that left it set
-   would stop *both* triggers for the session — the busy-marker leak again, and
-   since poll and focus share this one flag, one failure would take out live refresh
-   entirely.
+   The in-flight gate is cleared in a `finally`, and a watchdog aborts a check that
+   never settles and releases the gate itself. A rejected *or* stalled check that
+   left it set would stop *both* triggers for the session — the busy-marker leak
+   again, and since poll and focus share this one gate, one failure would take out
+   live refresh entirely. A late answer from an aborted check is dropped by comparing
+   the check's token, not by assuming the promise settles at all.
 
 **Also chosen:** answers are tied to the id they were requested for, captured at
 request time (`shownIdRef` vs `requestId`), not read from live state — an A→B quick

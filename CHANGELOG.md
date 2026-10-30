@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.1.4
 
 **Refreshing no longer blanks the detail view, and regaining window focus only
 reloads when the tracker actually changed.**
@@ -18,8 +18,9 @@ reloads when the tracker actually changed.**
   only on a real change.
 - **One checker, one baseline.** Focus and poll share a single check and a single
   baseline; near-simultaneous triggers coalesce instead of queueing two refreshes.
-  The in-flight gate is released in a `finally`, so a transient route error cannot
-  leave it stuck and silently stop live refresh for the session.
+  The in-flight gate is released in a `finally`, and a watchdog aborts a check that
+  never settles — a transient route error or a stalled host must not leave the gate
+  stuck and silently stop live refresh for the session.
 - **Ordered answers only.** An answer for an issue that is no longer open is
   dropped by comparing against the id captured when the request was sent, not
   against live state — an A→B quick switch cannot let A's late answer paint over B.
@@ -28,8 +29,9 @@ Covered by four new panel tests: *a revision refresh keeps the open issue on scr
 until the new answer lands*, *switching issues clears the old body immediately*,
 *a late answer for a closed issue cannot paint over the open one*, *window focus
 refreshes only when the fingerprint moved, and only once* (including the
-double-trigger case), and *a failed version check does not wedge live refresh*.
-**113 checks** across five suites.
+double-trigger case), *a failed version check does not wedge live refresh*, and
+*a version check that never settles releases the gate on timeout*.
+**114 checks** across five suites.
 
 ## 1.1.3
 

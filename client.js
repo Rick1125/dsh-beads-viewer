@@ -13,8 +13,16 @@ window.__ModuleLoader__.load({
     const ROUTE = 'beads-viewer/api'
     const LIST_PAGE = 120
     /** How often the panel asks for the workspace fingerprint. Cheap by design. */
-    /** How often the panel asks for the workspace fingerprint. Cheap by design. */
     const pollInterval = () => Number(globalThis.__bvPollMs) || 5000
+    /**
+     * How long one fingerprint check may hang before its gate is released.
+     *
+     * The Host is local and answers in microseconds, but it can still stall (a
+     * suspended process, a dead socket). Poll and focus share one gate, so a check
+     * that never settles would silently stop live refresh for the whole session —
+     * the same leak the Host's busy marker had. A late answer is ignored.
+     */
+    const checkTimeout = () => Number(globalThis.__bvCheckTimeoutMs) || pollInterval() * 2
     /** Comments a long thread shows before it offers the rest. */
     const COLLAPSED_COMMENTS = 4
     const NS = 'beadsViewer'
@@ -1083,7 +1091,10 @@ window.__ModuleLoader__.load({
         if (tabInfo?.tab?.visible === false) return undefined
         if (!cwd) return undefined
         let stopped = false
-        let checking = false
+        /** The in-flight check's token; null means the gate is free. */
+        let active = null
+        /** Abort + release for the check in flight, so unmount can stop it too. */
+        let activeStop = null
         // A fresh mount (or a different workspace) has no baseline yet; the first
         // check seeds it rather than looking like a change.
         seenVersionRef.current = undefined
@@ -1091,10 +1102,32 @@ window.__ModuleLoader__.load({
           // Focus and the interval can fire together; run one check at a time, and
           // the baseline moves on the first, so the second sees "no change" rather
           // than queueing a duplicate refresh.
-          if (stopped || checking) return
-          checking = true
-          api({ cwd, action: 'version' }).then((data) => {
-            if (stopped || !data?.ok) return
+          if (stopped || active !== null) return
+          const token = {}
+          active = token
+          const controller = new AbortController()
+          // A watchdog, not only a `finally`: if the promise never settles, nothing
+          // ever reaches the `finally`, and one stalled host would stop both poll and
+          // focus for the session. Releasing the gate here keeps refresh alive; the
+          // token then drops whatever the stalled request eventually answers.
+          const watchdog = setTimeout(() => {
+            controller.abort()
+            if (active === token) active = null
+          }, checkTimeout())
+          const release = () => {
+            clearTimeout(watchdog)
+            if (active === token) {
+              active = null
+              activeStop = null
+            }
+          }
+          activeStop = () => {
+            controller.abort()
+            release()
+          }
+          api({ cwd, action: 'version' }, controller.signal).then((data) => {
+            if (stopped || active !== token) return
+            if (!data?.ok) return
             // A `bd` read in flight means this sample is mid-write: the store is
             // being touched by our own request, so the value is neither the old
             // state nor the new one. Skip it; the next check settles.
@@ -1112,11 +1145,7 @@ window.__ModuleLoader__.load({
             forceNextRef.current = true
             setRevision((value) => value + 1)
           }).catch(() => { /* the route is down; the failure card handles it */ })
-            // Released on every path, including a rejection or an early return
-            // above: a check that never clears this flag would wedge live refresh
-            // for the rest of the session — the same leak the Host's busy marker
-            // had. `checking` is the only gate poll and focus share.
-            .finally(() => { checking = false })
+            .finally(release)
         }
         const timer = setInterval(checkVersion, pollInterval())
         window.addEventListener('focus', checkVersion)
@@ -1125,6 +1154,9 @@ window.__ModuleLoader__.load({
           stopped = true
           clearInterval(timer)
           window.removeEventListener('focus', checkVersion)
+          // Unmount is not an answer: abort the check and drop its watchdog rather
+          // than leaving a timer (and possibly a pending request) behind.
+          if (activeStop) activeStop()
         }
       }, [cwd, tabInfo?.tab?.visible])
 

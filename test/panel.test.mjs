@@ -970,6 +970,75 @@ test('a failed version check does not wedge live refresh', async () => {
   }
 })
 
+test('a version check that never settles releases the gate on timeout', async () => {
+  globalThis.__bvPollMs = 60000
+  globalThis.__bvCheckTimeoutMs = 40
+  let mode = 'seed' // seed → stall → change
+  const overviewForces = []
+  // This is the one test that bypasses useFetch, so it must put the real transport
+  // back itself or the fake would leak into whatever runs next.
+  const realFetch = globalThis.fetch
+  // No useFetch here: a stalled request would keep its in-flight counter set and
+  // the settle helper would wait for it, which is the very hang under test.
+  globalThis.fetch = (url) => {
+    const parsed = new URL(String(url))
+    const action = parsed.searchParams.get('action') ?? 'overview'
+    if (action === 'version') {
+      if (mode === 'stall') return new Promise(() => {}) // never settles
+      const version = mode === 'change' ? 'ver-2' : 'ver-1'
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: async () => ({ ok: true, cwd: workspace, version }),
+        text: async () => '',
+      })
+    }
+    if (action === 'overview') overviewForces.push(parsed.searchParams.get('force'))
+    return hostFetchInner(url)
+  }
+  const props = {
+    sessionId: 'sess-check-stall',
+    useSessions: (selector) => selector({ byId: { 'sess-check-stall': { cwd: workspace } } }),
+    useTabInfo: () => ({ tab: { visible: true, actions: {} } }),
+    inputActions: null,
+  }
+  const realSetInterval = globalThis.setInterval
+  const realClearInterval = globalThis.clearInterval
+  const spawned = []
+  globalThis.setInterval = (fn, ms, ...rest) => {
+    const id = realSetInterval(fn, ms, ...rest)
+    spawned.push(id)
+    return id
+  }
+  try {
+    windowListeners.clear()
+    hookSlots = []
+    hookEffectDeps = []
+    await settleAgain(BeadsPanel, props) // mount; the first check seeds the baseline
+    const focusHandlers = [...(windowListeners.get('focus') ?? [])]
+    assert.ok(focusHandlers.length > 0, 'a visible panel installs a focus listener')
+
+    // A check that never answers must not hold the gate: the watchdog releases it.
+    mode = 'stall'
+    for (const handler of focusHandlers) handler()
+    await tick(90) // longer than the 40ms watchdog
+
+    mode = 'change'
+    const before = overviewForces.length
+    for (const handler of focusHandlers) handler()
+    await settleAgain(BeadsPanel, props)
+    const forced = overviewForces.slice(before).filter((value) => value === '1')
+    assert.equal(forced.length, 1, 'a later fingerprint change must still refresh after a stalled check')
+  } finally {
+    for (const id of spawned) realClearInterval(id)
+    globalThis.setInterval = realSetInterval
+    globalThis.__bvPollMs = undefined
+    globalThis.__bvCheckTimeoutMs = undefined
+    globalThis.fetch = realFetch
+    windowListeners.clear()
+  }
+})
+
 /* -------------------------------------------------------------------------- */
 
 let failed = 0
