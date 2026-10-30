@@ -148,6 +148,41 @@ opened too late to mask it. The third because the mask itself could outlive its
 usefulness — a fix that stops refreshing is worse than the bug it fixed. The fourth
 because two overlapping writes each invalidated the other's mask.
 
+## Refreshing is invisible, ordered, and only on change
+
+**Chosen:** three rules that together make an open detail view feel static unless the
+tracker really changed.
+
+1. **Stale-while-revalidate for the detail.** `useIssue` keeps the body it already
+   has while a revision refresh is in flight and swaps the new answer in when it
+   lands; the "Loading issue" placeholder is reserved for "nothing to show yet".
+   Opening a *different* issue still clears immediately — an old body must never sit
+   under a new id, even for one frame.
+2. **Focus is a question, not a command.** Regaining window focus used to bump the
+   revision unconditionally, spending a `bd` read for nothing. It now asks the same
+   stat-only fingerprint question as the 5-second poll and refreshes only on a real
+   change.
+3. **One checker, one baseline.** Focus and poll share one `checkVersion` closure
+   and one `seenVersionRef`; a concurrent trigger is ignored and the baseline moves
+   on the first answer, so two near-simultaneous triggers cannot queue two reads.
+   The in-flight gate is cleared in a `finally`: a rejected check that left it set
+   would stop *both* triggers for the session — the busy-marker leak again, and
+   since poll and focus share this one flag, one failure would take out live refresh
+   entirely.
+
+**Also chosen:** answers are tied to the id they were requested for, captured at
+request time (`shownIdRef` vs `requestId`), not read from live state — an A→B quick
+switch must not let A's late answer paint over B. The `AbortController` already
+covers most of it; the id check is the belt to that suspenders.
+
+**Rejected:** refreshing on every focus regardless of change. It is simple, and it
+was the status quo, but it makes the panel look broken: the user comes back, nothing
+changed, and the view blanks and repaints.
+
+**Rejected:** dropping the focus listener and relying on the poll alone. Correct, but
+a tracker change made in another window would take up to five seconds to appear even
+though the user just came back — the one moment they are most likely to expect it.
+
 ## Secondary blocks are washed; the description is not
 
 **Chosen:** `background: color-mix(in srgb, var(--bv-teal) 4%, transparent)` on

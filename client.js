@@ -656,20 +656,39 @@ window.__ModuleLoader__.load({
 
     function useIssue(cwd, id, revision) {
       const [state, setState] = React.useState({ loading: false, error: null, data: null })
+      // The id whose answer is on screen / being requested. A revision bump keeps
+      // it; opening a different issue changes it. Comparing a response against
+      // THIS (captured at request time) rather than live state is what stops an
+      // A→B fast switch from letting A's late answer paint over B.
+      const shownIdRef = React.useRef(null)
       React.useEffect(() => {
         if (!cwd || !id) {
+          shownIdRef.current = null
           setState({ loading: false, error: null, data: null })
           return undefined
         }
         const controller = new AbortController()
-        setState({ loading: true, error: null, data: null })
-        api({ cwd, action: 'issue', id }, controller.signal)
+        const requestId = id
+        const sameIssue = shownIdRef.current === requestId
+        shownIdRef.current = requestId
+        // stale-while-revalidate: a revision refresh of the SAME issue keeps the
+        // body it already has, so a focus/poll refresh never blanks the detail. A
+        // different issue must not inherit the previous body even for one frame.
+        setState((previous) => ({
+          loading: true,
+          error: null,
+          data: sameIssue ? previous.data : null,
+        }))
+        api({ cwd, action: 'issue', id: requestId }, controller.signal)
           .then((data) => {
             if (controller.signal.aborted) return
+            // Out-of-order guard: drop an answer for an issue that is no longer open.
+            if (shownIdRef.current !== requestId) return
             setState({ loading: false, error: data?.ok === false ? data.message : null, data })
           })
           .catch((error) => {
             if (controller.signal.aborted || error?.name === 'AbortError') return
+            if (shownIdRef.current !== requestId) return
             setState({ loading: false, error: String(error?.message ?? error), data: null })
           })
         return () => controller.abort()
@@ -923,8 +942,13 @@ window.__ModuleLoader__.load({
         : undefined
 
       const [revision, setRevision] = React.useState(0)
-      /** Last workspace fingerprint the panel saw; undefined until the first poll. */
-      const [seenVersion, setSeenVersion] = React.useState(undefined)
+      /**
+       * Last workspace fingerprint the panel saw; undefined until the first check.
+       * A ref, not state, so the focus and poll callers share one baseline without a
+       * stale closure — the first of two near-simultaneous triggers moves it, and the
+       * second then sees "no change" instead of queueing a duplicate refresh.
+       */
+      const seenVersionRef = React.useRef(undefined)
       /** Set just before the revision bump so the next load bypasses the cache. */
       const forceNextRef = React.useRef(false)
       const [query, setQuery] = React.useState('')
@@ -1050,46 +1074,58 @@ window.__ModuleLoader__.load({
       )
 
       React.useEffect(() => {
-        // Refreshing on window focus is a courtesy for a visible panel; a
-        // `keepMounted` panel behind another tab would spend a `bd` call per
-        // window focus for nothing.
-        if (tabInfo?.tab?.visible === false) return undefined
-        const onFocus = () => setRevision((value) => value + 1)
-        window.addEventListener('focus', onFocus)
-        return () => window.removeEventListener('focus', onFocus)
-      }, [tabInfo?.tab?.visible])
-
-      React.useEffect(() => {
-        // `bd` writes from a terminal or another session do not touch this window,
-        // so focus alone never learns about them. Poll a stat-only fingerprint of
-        // the workspace instead: it answers in microseconds and spawns nothing, and
-        // only a change spends the real `bd` read. Invisible tabs stay silent.
+        // Keeping the panel in step with the tracker is one job with two triggers:
+        // a poll that catches `bd` writes from a terminal or another session (which
+        // never touch this window), and a window focus that catches the user coming
+        // back. Both answer the same question — "did the stat-only fingerprint
+        // move?" — so they share one checker and one baseline. A stat-only read
+        // spawns nothing; only a real change spends the `bd` read.
         if (tabInfo?.tab?.visible === false) return undefined
         if (!cwd) return undefined
         let stopped = false
-        const timer = setInterval(() => {
+        let checking = false
+        // A fresh mount (or a different workspace) has no baseline yet; the first
+        // check seeds it rather than looking like a change.
+        seenVersionRef.current = undefined
+        const checkVersion = () => {
+          // Focus and the interval can fire together; run one check at a time, and
+          // the baseline moves on the first, so the second sees "no change" rather
+          // than queueing a duplicate refresh.
+          if (stopped || checking) return
+          checking = true
           api({ cwd, action: 'version' }).then((data) => {
             if (stopped || !data?.ok) return
             // A `bd` read in flight means this sample is mid-write: the store is
             // being touched by our own request, so the value is neither the old
-            // state nor the new one. Skip it; the next poll settles.
+            // state nor the new one. Skip it; the next check settles.
             if (data.busy) return
             const version = data.version ?? null
-            setSeenVersion((previous) => {
-              // The first answer only seeds the baseline; a change from it refreshes.
-              if (previous === undefined || previous === version) return version
-              // This route's own `bd` reads move the fingerprint too (spawning bd
-              // touches journal.idx). The Host reports what the fingerprint looked
-              // like after its last read; if the polled value equals that, the
-              // movement was ours and the tracker has not changed.
-              if (data.afterOwnRead && version === data.afterOwnRead) return version
-              forceNextRef.current = true
-              setRevision((value) => value + 1)
-              return version
-            })
+            const previous = seenVersionRef.current
+            seenVersionRef.current = version
+            // The first answer only seeds the baseline; movement refreshes.
+            if (previous === undefined || previous === version) return
+            // This route's own `bd` reads move the fingerprint too (spawning bd
+            // touches journal.idx). The Host reports what the fingerprint looked
+            // like after its last read; if the polled value equals that, the
+            // movement was ours and the tracker has not changed.
+            if (data.afterOwnRead && version === data.afterOwnRead) return
+            forceNextRef.current = true
+            setRevision((value) => value + 1)
           }).catch(() => { /* the route is down; the failure card handles it */ })
-        }, pollInterval())
-        return () => { stopped = true; clearInterval(timer) }
+            // Released on every path, including a rejection or an early return
+            // above: a check that never clears this flag would wedge live refresh
+            // for the rest of the session — the same leak the Host's busy marker
+            // had. `checking` is the only gate poll and focus share.
+            .finally(() => { checking = false })
+        }
+        const timer = setInterval(checkVersion, pollInterval())
+        window.addEventListener('focus', checkVersion)
+        checkVersion()
+        return () => {
+          stopped = true
+          clearInterval(timer)
+          window.removeEventListener('focus', checkVersion)
+        }
       }, [cwd, tabInfo?.tab?.visible])
 
       React.useEffect(() => {
@@ -1383,14 +1419,14 @@ window.__ModuleLoader__.load({
             h(IconButton, { label: '⧉', title: t('copyIssueId'), onClick: () => copyId(openId) }),
             h(IconButton, { label: '↵', title: t('insertIssueId'), onClick: () => insertId(openId) }),
           ),
-          detail.loading
-            ? h('div', { className: 'bv-empty' }, t('loadingIssue'))
-            : detail.error
-              ? h('div', { className: 'bv-empty bv-error' }, detail.error)
-              : data && data.ok === false
-                ? h(FailureCard, { data, cwd, onRetry: () => setRevision((value) => value + 1) })
-                : data
-                  ? renderIssue(data.issue, data.comments, data.dependents)
+          detail.error && !data
+            ? h('div', { className: 'bv-empty bv-error' }, detail.error)
+            : data && data.ok === false
+              ? h(FailureCard, { data, cwd, onRetry: () => setRevision((value) => value + 1) })
+              : data
+                ? renderIssue(data.issue, data.comments, data.dependents)
+                : detail.loading
+                  ? h('div', { className: 'bv-empty' }, t('loadingIssue'))
                   : null,
         )
       }
@@ -2108,6 +2144,7 @@ ol.bv-mlist>.bv-mli::before{left:-2.35em;width:2.35em;content:counter(bv-li) "."
         plainRun,
         Markdown,
         BeadsPanel,
+        useIssue,
         statusTone,
         priorityLabel,
         Badge,

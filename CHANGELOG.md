@@ -1,5 +1,36 @@
 # Changelog
 
+## Unreleased
+
+**Refreshing no longer blanks the detail view, and regaining window focus only
+reloads when the tracker actually changed.**
+
+- **The detail view keeps its body while it refreshes.** A revision bump used to
+  reset the detail to `{ loading: true, data: null }`, so every refresh — focus,
+  poll, or the Refresh button — blanked the open issue and repainted it. A refresh
+  of the same issue now keeps the body on screen and swaps in the new answer when
+  it lands; the loading placeholder is reserved for "nothing to show yet". Opening
+  a *different* issue still clears immediately, so an old body never sits under a
+  new id.
+- **Focus compares before refreshing.** Regaining window focus bumped the revision
+  unconditionally, spending a `bd` read even when nothing had changed. Focus now
+  asks the same stat-only fingerprint question as the 5-second poll and refreshes
+  only on a real change.
+- **One checker, one baseline.** Focus and poll share a single check and a single
+  baseline; near-simultaneous triggers coalesce instead of queueing two refreshes.
+  The in-flight gate is released in a `finally`, so a transient route error cannot
+  leave it stuck and silently stop live refresh for the session.
+- **Ordered answers only.** An answer for an issue that is no longer open is
+  dropped by comparing against the id captured when the request was sent, not
+  against live state — an A→B quick switch cannot let A's late answer paint over B.
+
+Covered by four new panel tests: *a revision refresh keeps the open issue on screen
+until the new answer lands*, *switching issues clears the old body immediately*,
+*a late answer for a closed issue cannot paint over the open one*, *window focus
+refreshes only when the fingerprint moved, and only once* (including the
+double-trigger case), and *a failed version check does not wedge live refresh*.
+**113 checks** across five suites.
+
 ## 1.1.3
 
 **The last of the detail-page refreshes: a concurrent read race.**

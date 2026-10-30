@@ -707,6 +707,269 @@ test('a missing tab record does not break the panel', async () => {
   assert.match(out, /Search issues/)
 })
 
+
+/* -------------------------------------------------------------------------- *
+ * Detail refresh behavior: never blank, never out of order, never duplicate.
+ * -------------------------------------------------------------------------- */
+
+/**
+ * One render pass of a hook probe: render, then run the effects that pass queued.
+ * The probe uses the shipped `useIssue`, so its state machine is exercised without
+ * the whole panel.
+ */
+function renderProbe(Probe, props) {
+  hookCursor = 0
+  hookEffectIndex = 0
+  hookEffects = []
+  renderToStaticMarkup(React.createElement(Probe, props))
+  const queued = hookEffects
+  hookEffects = []
+  for (const effect of queued) effect()
+  // Re-render so the state the effect just set (loading, or data cleared on an id
+  // switch) is what the caller asserts on — a browser would too.
+  hookCursor = 0
+  hookEffectIndex = 0
+  hookEffects = []
+  const html = renderToStaticMarkup(React.createElement(Probe, props))
+  hookEffects = []
+  return html
+}
+
+function DetailProbe({ cwd, id, revision }) {
+  const state = mod.__test.useIssue(cwd, id, revision)
+  const title = state.data?.issue?.title ?? null
+  return React.createElement(
+    'div',
+    null,
+    // Mirrors renderDetail: the placeholder is only for "nothing to show yet".
+    state.loading && !state.data ? 'LOADING ' : '',
+    state.error ? `ERROR ${state.error} ` : '',
+    title === null ? '' : `TITLE:${title}`,
+  )
+}
+
+const tick = (ms = 25) => new Promise((done) => setTimeout(done, ms))
+
+const issueResponse = (id, title) => ({
+  ok: true,
+  status: 200,
+  json: async () => ({ ok: true, issue: { id, title }, comments: [] }),
+  text: async () => '',
+})
+
+/** Settle a probe that was given a real (bd-backed) transport. */
+async function drainProbe() {
+  await drainInFlight()
+  await tick()
+}
+
+test('a revision refresh keeps the open issue on screen until the new answer lands', async () => {
+  useFetch(hostFetch())
+  hookSlots = []
+  hookEffectDeps = []
+  renderProbe(DetailProbe, { cwd: workspace, id: smokeId, revision: 0 })
+  await drainProbe()
+  let html = renderProbe(DetailProbe, { cwd: workspace, id: smokeId, revision: 0 })
+  assert.match(html, /TITLE:Panel smoke issue/)
+
+  // The next read does not answer yet: the body must stay, not blank.
+  let release
+  useFetch((url) => {
+    const parsed = new URL(String(url))
+    if ((parsed.searchParams.get('action') ?? 'overview') === 'issue') {
+      return new Promise((resolve) => { release = resolve })
+    }
+    return hostFetchInner(url)
+  })
+  html = renderProbe(DetailProbe, { cwd: workspace, id: smokeId, revision: 1 })
+  assert.match(html, /TITLE:Panel smoke issue/, 'the old body stays while the refresh is in flight')
+  assert.doesNotMatch(html, /LOADING/, 'the detail must not fall back to a loading placeholder')
+
+  release(issueResponse(smokeId, 'Refreshed title'))
+  await drainProbe()
+  html = renderProbe(DetailProbe, { cwd: workspace, id: smokeId, revision: 1 })
+  assert.match(html, /TITLE:Refreshed title/, 'the settled answer replaces the body in place')
+})
+
+test('switching issues clears the old body immediately', async () => {
+  useFetch(hostFetch())
+  hookSlots = []
+  hookEffectDeps = []
+  renderProbe(DetailProbe, { cwd: workspace, id: smokeId, revision: 0 })
+  await drainProbe()
+  let html = renderProbe(DetailProbe, { cwd: workspace, id: smokeId, revision: 0 })
+  assert.match(html, /TITLE:Panel smoke issue/)
+
+  // A different id while its read is pending: the previous issue must not linger.
+  let releaseB
+  useFetch((url) => {
+    const parsed = new URL(String(url))
+    if ((parsed.searchParams.get('action') ?? 'overview') === 'issue' && parsed.searchParams.get('id') === blockerId) {
+      return new Promise((resolve) => { releaseB = resolve })
+    }
+    return hostFetchInner(url)
+  })
+  html = renderProbe(DetailProbe, { cwd: workspace, id: blockerId, revision: 0 })
+  assert.doesNotMatch(html, /Panel smoke issue/, 'a different issue must not inherit the old body')
+  assert.match(html, /LOADING/)
+
+  releaseB(issueResponse(blockerId, 'The blocker'))
+  await drainProbe()
+  html = renderProbe(DetailProbe, { cwd: workspace, id: blockerId, revision: 0 })
+  assert.match(html, /TITLE:The blocker/)
+})
+
+test('a late answer for a closed issue cannot paint over the open one', async () => {
+  let releaseA
+  useFetch((url) => {
+    const parsed = new URL(String(url))
+    if ((parsed.searchParams.get('action') ?? 'overview') !== 'issue') return hostFetchInner(url)
+    if (parsed.searchParams.get('id') === smokeId) {
+      return new Promise((resolve) => { releaseA = resolve })
+    }
+    return Promise.resolve(issueResponse(blockerId, 'The blocker'))
+  })
+  hookSlots = []
+  hookEffectDeps = []
+  renderProbe(DetailProbe, { cwd: workspace, id: smokeId, revision: 0 }) // A pending
+  let html = renderProbe(DetailProbe, { cwd: workspace, id: blockerId, revision: 0 }) // switch to B
+  await tick()
+  html = renderProbe(DetailProbe, { cwd: workspace, id: blockerId, revision: 0 })
+  assert.match(html, /TITLE:The blocker/)
+
+  // A answers long after B is on screen; it must be dropped.
+  releaseA(issueResponse(smokeId, 'A-late'))
+  await tick()
+  html = renderProbe(DetailProbe, { cwd: workspace, id: blockerId, revision: 0 })
+  assert.match(html, /TITLE:The blocker/)
+  assert.doesNotMatch(html, /A-late/)
+})
+
+test('window focus refreshes only when the fingerprint moved, and only once', async () => {
+  globalThis.__bvPollMs = 60000
+  let version = 'focus-v1'
+  const overviewForces = []
+  useFetch((url) => {
+    const parsed = new URL(String(url))
+    const action = parsed.searchParams.get('action') ?? 'overview'
+    if (action === 'version') {
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: async () => ({ ok: true, cwd: workspace, version }),
+        text: async () => '',
+      })
+    }
+    if (action === 'overview') overviewForces.push(parsed.searchParams.get('force'))
+    return hostFetchInner(url)
+  })
+  const props = {
+    sessionId: 'sess-focus',
+    useSessions: (selector) => selector({ byId: { 'sess-focus': { cwd: workspace } } }),
+    useTabInfo: () => ({ tab: { visible: true, actions: {} } }),
+    inputActions: null,
+  }
+  // The poll interval outlives the test unless we clear it; capture what the
+  // effect installs so the process can exit.
+  const realSetInterval = globalThis.setInterval
+  const realClearInterval = globalThis.clearInterval
+  const spawned = []
+  globalThis.setInterval = (fn, ms, ...rest) => {
+    const id = realSetInterval(fn, ms, ...rest)
+    spawned.push(id)
+    return id
+  }
+  try {
+    windowListeners.clear()
+    hookSlots = []
+    hookEffectDeps = []
+    await settleAgain(BeadsPanel, props) // mount without running unmount cleanups
+    const focusHandlers = [...(windowListeners.get('focus') ?? [])]
+    assert.ok(focusHandlers.length > 0, 'a visible panel installs a focus listener')
+
+    const before = overviewForces.length
+    for (const handler of focusHandlers) handler()
+    await settleAgain(BeadsPanel, props)
+    assert.equal(overviewForces.length, before, 'focus with an unchanged fingerprint must not reload')
+
+    version = 'focus-v2'
+    for (const handler of focusHandlers) {
+      handler()
+      handler() // a second trigger in the same tick — focus and poll can coincide
+    }
+    await settleAgain(BeadsPanel, props)
+    const forced = overviewForces.slice(before).filter((value) => value === '1')
+    assert.equal(forced.length, 1, 'two near-simultaneous triggers must produce one refresh')
+  } finally {
+    for (const id of spawned) realClearInterval(id)
+    globalThis.setInterval = realSetInterval
+    globalThis.__bvPollMs = undefined
+    windowListeners.clear()
+  }
+})
+
+test('a failed version check does not wedge live refresh', async () => {
+  globalThis.__bvPollMs = 60000
+  let mode = 'seed' // seed → reject → change
+  const overviewForces = []
+  useFetch((url) => {
+    const parsed = new URL(String(url))
+    const action = parsed.searchParams.get('action') ?? 'overview'
+    if (action === 'version') {
+      if (mode === 'reject') return Promise.reject(new Error('route down'))
+      const version = mode === 'change' ? 'ver-2' : 'ver-1'
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: async () => ({ ok: true, cwd: workspace, version }),
+        text: async () => '',
+      })
+    }
+    if (action === 'overview') overviewForces.push(parsed.searchParams.get('force'))
+    return hostFetchInner(url)
+  })
+  const props = {
+    sessionId: 'sess-check-fail',
+    useSessions: (selector) => selector({ byId: { 'sess-check-fail': { cwd: workspace } } }),
+    useTabInfo: () => ({ tab: { visible: true, actions: {} } }),
+    inputActions: null,
+  }
+  const realSetInterval = globalThis.setInterval
+  const realClearInterval = globalThis.clearInterval
+  const spawned = []
+  globalThis.setInterval = (fn, ms, ...rest) => {
+    const id = realSetInterval(fn, ms, ...rest)
+    spawned.push(id)
+    return id
+  }
+  try {
+    windowListeners.clear()
+    hookSlots = []
+    hookEffectDeps = []
+    await settleAgain(BeadsPanel, props) // mount; the first check seeds the baseline
+    const focusHandlers = [...(windowListeners.get('focus') ?? [])]
+    assert.ok(focusHandlers.length > 0, 'a visible panel installs a focus listener')
+
+    // A check that rejects must release the in-flight gate.
+    mode = 'reject'
+    for (const handler of focusHandlers) handler()
+    await settleAgain(BeadsPanel, props)
+
+    // With the gate stuck, this trigger would be ignored and nothing would reload.
+    mode = 'change'
+    const before = overviewForces.length
+    for (const handler of focusHandlers) handler()
+    await settleAgain(BeadsPanel, props)
+    const forced = overviewForces.slice(before).filter((value) => value === '1')
+    assert.equal(forced.length, 1, 'a later fingerprint change must still refresh after a failed check')
+  } finally {
+    for (const id of spawned) realClearInterval(id)
+    globalThis.setInterval = realSetInterval
+    globalThis.__bvPollMs = undefined
+    windowListeners.clear()
+  }
+})
+
 /* -------------------------------------------------------------------------- */
 
 let failed = 0

@@ -115,7 +115,7 @@ client.js           Client 半：侧栏页签、面板与 Markdown 渲染器
 cordis.patch.yml    挂载 host 条目的 bundle patch
 locale/{en,zh}.json 插件管理器里的标题与描述
 icon.svg            面板图标
-test/               五个套件，108 项检查
+test/               五个套件，113 项检查
 docs/               本 README 引用的截图
 ```
 
@@ -126,7 +126,7 @@ docs/               本 README 引用的截图
 npm test
 ```
 
-五个套件，108 项：
+五个套件，113 项：
 
 | 文件 | 覆盖 |
 | --- | --- |
